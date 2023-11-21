@@ -55,7 +55,32 @@ impl FromSlimReader for InstructionResult {
         Ok(match value.as_str() {
             "OK" => InstructionResult::Ok { id },
             "null" => InstructionResult::Null { id },
-            _ => InstructionResult::String { id, value },
+            other => {
+                if let Some(message) = other.strip_prefix("__EXCEPTION__:") {
+                    if let Some(pos) = message.find("message:<<") {
+                        let mut completed_message = message[0..pos].to_string();
+                        let (_, rest) = message.split_at(pos + 10);
+                        let Some((message, rest)) = rest.split_once(">>") else {
+                            bail!("Failed processing exception {message}")
+                        };
+                        completed_message += message;
+                        completed_message += rest;
+                        InstructionResult::Exception {
+                            id: id,
+                            message: message.to_string(),
+                            _complete_message: completed_message.to_string(),
+                        }
+                    } else {
+                        InstructionResult::Exception {
+                            id: id,
+                            message: message.to_string(),
+                            _complete_message: message.to_string(),
+                        }
+                    }
+                } else {
+                    InstructionResult::String { id, value }
+                }
+            }
         })
     }
 }
@@ -133,6 +158,49 @@ mod test {
             vec!["Element1".to_string(), "Element2".into()],
             Vec::<String>::from_reader(&mut Cursor::new(
                 "000041:[000002:000008:Element1:000008:Element2:]"
+            ))?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn read_instruction_result() -> Result<()> {
+        let id = Id::from_string("01HFM0NQM3ZS6BBX0ZH6VA6DJX".into()).unwrap();
+        assert_eq!(
+            InstructionResult::Ok { id: id.clone() },
+            InstructionResult::from_reader(&mut Cursor::new(
+                "000053:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000002:OK:]"
+            ))?
+        );
+        assert_eq!(
+            InstructionResult::Null { id: id.clone() },
+            InstructionResult::from_reader(&mut Cursor::new(
+                "000055:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000004:null:]"
+            ))?
+        );
+        assert_eq!(
+            InstructionResult::String {
+                id: id.clone(),
+                value: "Value".into()
+            },
+            InstructionResult::from_reader(&mut Cursor::new(
+                "000056:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000005:Value:]"
+            ))?
+        );
+        assert_eq!(
+            InstructionResult::Exception {
+                id: id.clone(),
+                message: "Message".into(),
+                _complete_message: "Message".into()
+            },
+            InstructionResult::from_reader(&mut Cursor::new(
+                "000073:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:0000021:__EXCEPTION__:Message:]"
+            ))?
+        );
+        assert_eq!(
+            InstructionResult::Exception { id: id.clone(), message: "Message".into(), _complete_message: "Some Exception Message".into() },
+            InstructionResult::from_reader(&mut Cursor::new(
+                "000100:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:0000048:__EXCEPTION__:Some Exception message:<<Message>>:]"
             ))?
         );
         Ok(())

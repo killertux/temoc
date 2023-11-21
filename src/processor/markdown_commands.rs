@@ -1,12 +1,20 @@
 use anyhow::{anyhow, bail, Result};
+use chrono::{NaiveDate, Utc};
 use convert_case::{Case, Casing};
 use markdown::{mdast::Node, unist::Position as MPosition};
 use std::fmt::Display;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MarkdownCommand {
-    Import { path: String, position: Position },
-    DecisionTable { class: Class, table: Vec<TableRow> },
+    Import {
+        path: String,
+        position: Position,
+    },
+    DecisionTable {
+        class: Class,
+        table: Vec<TableRow>,
+        snoozed: Snooze,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +60,38 @@ pub struct TableRow {
     pub getters: Vec<(MethodName, Value)>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snooze {
+    date: Option<NaiveDate>,
+}
+
+impl Snooze {
+    pub fn not_snooze() -> Self {
+        Self { date: None }
+    }
+
+    #[allow(clippy::self_named_constructors)]
+    pub fn snooze(date: NaiveDate) -> Self {
+        Self { date: Some(date) }
+    }
+
+    pub fn should_snooze(&self) -> bool {
+        match self.date {
+            None => false,
+            Some(date) => Utc::now().date_naive() <= date,
+        }
+    }
+}
+
+impl Display for Snooze {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.date {
+            None => Ok(()),
+            Some(date) => write!(f, "{}", date.format("%Y-%m-%d")),
+        }
+    }
+}
+
 enum MethodType {
     Getter,
     Setter,
@@ -62,7 +102,7 @@ pub fn get_commands_from_markdown(markdown: Node) -> Result<Vec<MarkdownCommand>
     let mut result = Vec::new();
     match markdown {
         Node::Root(root) => {
-            let mut executing_test = None;
+            let mut executing_test: Option<Class> = None;
             for node in root.children {
                 if let Some(test_class) = executing_test {
                     let Node::Table(table) = node else {
@@ -85,7 +125,7 @@ pub fn get_commands_from_markdown(markdown: Node) -> Result<Vec<MarkdownCommand>
                                 let position =
                                     text.position.ok_or(anyhow!("Expected position"))?.into();
                                 let text = text.value.trim();
-                                if text.starts_with("#") {
+                                if text.starts_with('#') {
                                     methods.push((
                                         MethodName(text.into(), position),
                                         MethodType::Commentary,
@@ -144,9 +184,23 @@ pub fn get_commands_from_markdown(markdown: Node) -> Result<Vec<MarkdownCommand>
                         }
                         rows.push(table_row);
                     }
+                    let mut snoozed = Snooze::not_snooze();
+                    let mut stripped_test_class = String::new();
+                    if let Some((class, rest)) = test_class.0.split_once(" -- ") {
+                        stripped_test_class = class.into();
+                        if let Some(date) = rest.trim().strip_prefix("snooze until") {
+                            snoozed =
+                                Snooze::snooze(NaiveDate::parse_from_str(date.trim(), "%Y-%m-%d")?);
+                        }
+                    }
                     result.push(MarkdownCommand::DecisionTable {
-                        class: test_class,
+                        class: if stripped_test_class.is_empty() {
+                            test_class
+                        } else {
+                            Class(stripped_test_class, test_class.1)
+                        },
                         table: rows,
+                        snoozed,
                     });
                     executing_test = None;
                     continue;
@@ -167,8 +221,9 @@ pub fn get_commands_from_markdown(markdown: Node) -> Result<Vec<MarkdownCommand>
                                 path: import.to_string(),
                                 position,
                             }),
-                            Some(("test", test_class)) => {
-                                executing_test = Some(Class(test_class.to_string(), position));
+                            Some(("decisionTable", test_class)) => {
+                                executing_test =
+                                    Some(Class(test_class.trim().to_string(), position));
                             }
                             _ => continue,
                         }
@@ -196,7 +251,7 @@ This is a calculator example
 
 [//]: # (import Fixtures)
 
-[//]: # (test Calculator)
+[//]: # (decisionTable Calculator)
 
 | a  | b   | sum? |
 |----|-----|------|
@@ -245,7 +300,8 @@ This is a calculator example
                                 Value("4".into(), Position::new(13, 14))
                             )]
                         }
-                    ]
+                    ],
+                    snoozed: Snooze::not_snooze(),
                 }
             ],
             commands
@@ -257,7 +313,7 @@ This is a calculator example
     fn spaces_into_camel_case_and_handle_set() -> Result<()> {
         let commands = get_commands_from_markdown(parse_markdown(
             r#"
-[//]: # (test Calculator)
+[//]: # (decisionTable Calculator)
 
 | set a | a getter? |
 |-------|-----------|
@@ -276,7 +332,8 @@ This is a calculator example
                         MethodName("aGetter".into(), Position::new(4, 11)),
                         Value("expected".into(), Position::new(6, 11))
                     )]
-                },]
+                },],
+                snoozed: Snooze::not_snooze(),
             }],
             commands
         );
@@ -300,7 +357,7 @@ This is a calculator example
     fn ignore_commentaries() -> Result<()> {
         let commands = get_commands_from_markdown(parse_markdown(
             r#"
-[//]: # (test Calculator)
+[//]: # (decisionTable Calculator)
 
 | a     | # comment | b?        |
 |-------|-----------|-----------|  
@@ -319,7 +376,39 @@ This is a calculator example
                         MethodName("b".into(), Position::new(4, 23)),
                         Value("expected".into(), Position::new(6, 23))
                     )]
-                },]
+                },],
+                snoozed: Snooze::not_snooze(),
+            }],
+            commands
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn snoozed() -> Result<()> {
+        let commands = get_commands_from_markdown(parse_markdown(
+            r#"
+[//]: # (decisionTable Calculator -- snooze until 2023-11-20)
+
+| a     | b?        |
+|-------|-----------|  
+| value | expected  |
+            "#,
+        ))?;
+        assert_eq!(
+            vec![MarkdownCommand::DecisionTable {
+                class: Class("Calculator".into(), Position::new(2, 1)),
+                table: vec![TableRow {
+                    setters: vec![(
+                        MethodName("setA".into(), Position::new(4, 3)),
+                        Value("value".into(), Position::new(6, 3))
+                    )],
+                    getters: vec![(
+                        MethodName("b".into(), Position::new(4, 11)),
+                        Value("expected".into(), Position::new(6, 11))
+                    )]
+                },],
+                snoozed: Snooze::snooze(NaiveDate::from_ymd_opt(2023, 11, 20).unwrap()),
             }],
             commands
         );

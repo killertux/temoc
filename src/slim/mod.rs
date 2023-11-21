@@ -34,7 +34,7 @@ where
             reader: BufReader::new(reader),
             writer,
             _version: version,
-            closed: true,
+            closed: false,
         })
     }
 
@@ -144,9 +144,21 @@ pub enum Instruction {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum InstructionResult {
-    Ok { id: Id },
-    Null { id: Id },
-    String { id: Id, value: String },
+    Ok {
+        id: Id,
+    },
+    Null {
+        id: Id,
+    },
+    Exception {
+        id: Id,
+        message: String,
+        _complete_message: String,
+    },
+    String {
+        id: Id,
+        value: String,
+    },
 }
 
 #[cfg(test)]

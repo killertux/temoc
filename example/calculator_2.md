@@ -2,9 +2,8 @@
 
 We can have multiple files to be tested
 
-[//]: # (import Fixtures)
 
-[//]: # (test Calculator)
+[//]: # (decisionTable Fixtures.Calculator)
 
 | a  | b   | sub? |
 |----|-----|------|
@@ -15,7 +14,7 @@ We can have multiple files to be tested
 
 We can also name our columns with a `set`
 
-[//]: # (test Calculator)
+[//]: # (decisionTable Fixtures.Calculator )
 
 | setA | set B | div? |
 |------|-------|------|
@@ -24,3 +23,13 @@ We can also name our columns with a `set`
 | 10   | 5     | 2    |
 | 10   | -20   | 0    |
 
+And we still need to implement exponetial:
+
+[//]: # (decisionTable Fixtures.Calculator -- snooze until 2099-12-31 )
+
+| a  | b   | exp? |
+|----|-----|------|
+| 1  | 2   | 1    |
+| 2  | 2   | 4    |
+| 3  | 2   | 9    |
+| 3  | 3   | 27   |

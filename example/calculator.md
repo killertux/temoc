@@ -6,7 +6,7 @@ So, in this calculator we can sum values like this:
 
 [//]: # (import Fixtures)
 
-[//]: # (test Calculator)
+[//]: # (decisionTable Calculator)
 
 | a  | b   | sum? |
 |----|-----|------|
@@ -17,7 +17,7 @@ So, in this calculator we can sum values like this:
 
 We can also multiply numbers and have commentary columns:
 
-[//]: # (test Calculator)
+[//]: # (decisionTable Calculator)
 
 | a  | b   | # comment  | mul? |
 |----|-----|------------|------|

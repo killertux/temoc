@@ -138,7 +138,7 @@ impl ToSlimString for Instruction {
     }
 }
 
-fn into_vec_str(args: &Vec<String>) -> Vec<&str> {
+fn into_vec_str(args: &[String]) -> Vec<&str> {
     args.iter().map(|string| string.as_str()).collect()
 }
 
