@@ -8,3 +8,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.75"
 clap = { version = "4", features = ["derive"] }
+convert_case = "0.6.0"
+markdown = "1.0.0-alpha.14"
+toml = "0.8.8"
+ulid = "1.1.0"

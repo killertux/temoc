@@ -1,0 +1,4 @@
+slim_server_command = "script to start slim server"
+port = 8426 # Port to connecto to the slim server
+test_dir = "path to the test dir"
+recursive = true # Should recrusively open folders to execute test files

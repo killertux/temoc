@@ -1,271 +1,156 @@
-use crate::tokenizer::Token;
 use anyhow::{anyhow, bail, Result};
 use clap::Parser;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
-use std::{iter::Peekable, str::Chars};
-use tokenizer::Tokenizer;
+use processor::process_markdown;
+use std::{
+    fs::{metadata, read_dir, read_to_string},
+    io::{Read, Write},
+    net::TcpStream,
+    path::{Path, PathBuf},
+    process::{exit, Command, Stdio},
+    thread::sleep,
+    time::{Duration, Instant},
+};
+use toml::Table;
 
-/// Simple program to greet a person
+use crate::slim::SlimConnection;
+
+mod processor;
+mod slim;
+
+/// Test markdown files using a slim server
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Number of times to greet
-    // #[arg(short, long)]
-    // slim_server: String,
+    /// Configuration file
     #[arg(short, long)]
-    port: u16,
+    configuration_file: Option<PathBuf>,
+    /// Port to connect to the slim server
+    #[arg(short, long)]
+    port: Option<u16>,
+    /// Command to start the slim server
+    #[arg(short, long)]
+    slim_server_command: Option<String>,
+    /// Recursively traverse files and directories to test
+    #[arg(short, long)]
+    recursive: Option<bool>,
+    /// List of files to test
+    files: Vec<PathBuf>,
 }
 
-mod tokenizer;
-
 fn main() -> Result<()> {
-    let args = Args::parse();
-    // let mut slim_server = Command::new("sh").arg("-c").arg(args.slim_server).spawn()?;
+    let args = append_config_to_args(Args::parse())?;
+    let mut slim_server = None;
 
-    let tcp_stream = TcpStream::connect(format!("127.0.0.1:{}", args.port))?;
+    if let Some(command) = args.slim_server_command {
+        slim_server = Some(
+            Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()?,
+        );
+    }
+
+    let tcp_stream = connect_to_slim_server(args.port.unwrap_or(1), Duration::from_secs(10))?;
     let mut connection = SlimConnection::new(tcp_stream.try_clone()?, tcp_stream)?;
-    dbg!(connection.send_instructions(&[Instruction::Import {
-        id: Id("import_0_0".into()),
-        path: "Fixtures".into(),
-    }])?);
 
-    println!("{:?}", connection.version);
+    let fail = process_files(&mut connection, args.recursive.unwrap_or(false), args.files)?;
+    connection.close()?;
+    if fail {
+        exit(1)
+    }
 
-    println!("Hello, world!");
-    // slim_server.kill()?;
+    if let Some(mut server) = slim_server {
+        if let Ok(None) = server.try_wait() {
+            sleep(Duration::from_millis(500));
+            server.kill()?;
+        }
+    }
+
     Ok(())
 }
 
-struct SlimConnection<R, W> {
-    reader: BufReader<R>,
-    writer: W,
-    version: SlimVersion,
-}
-
-impl<R, W> SlimConnection<R, W>
-where
-    R: Read,
-    W: Write,
-{
-    pub fn new(mut reader: R, writer: W) -> Result<Self> {
-        let mut buf = [0_u8; 13];
-        reader.read_exact(&mut buf)?;
-        let version = SlimVersion::from_str(String::from_utf8_lossy(&buf))?;
-        Ok(Self {
-            reader: BufReader::new(reader),
-            writer,
-            version,
-        })
-    }
-
-    pub fn send_instructions(&mut self, data: &[Instruction]) -> Result<Vec<InstructionResult>> {
-        self.writer.write_all(data.to_slim_string().as_bytes())?;
-        Ok(Vec::from_reader(&mut self.reader)?)
-    }
-}
-
-#[derive(Debug)]
-enum SlimVersion {
-    V0_3,
-    V0_4,
-    V0_5,
-}
-impl SlimVersion {
-    fn from_str(string: impl AsRef<str>) -> Result<Self> {
-        let (_, version) = string
-            .as_ref()
-            .split_once(" -- ")
-            .ok_or(anyhow!("Invalid slim version string"))?;
-        Ok(match version.trim() {
-            "V0.3" => SlimVersion::V0_3,
-            "V0.4" => SlimVersion::V0_4,
-            "V0.5" => SlimVersion::V0_5,
-            v => bail!("Version {v} not recognized"),
-        })
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct Id(String);
-
-#[derive(Debug, PartialEq, Eq)]
-enum Instruction {
-    Import {
-        id: Id,
-        path: String,
-    },
-    Make {
-        id: Id,
-        instance: String,
-        class: String,
-        args: String,
-    },
-    Call {
-        id: Id,
-        instance: String,
-        function: String,
-        args: String,
-    },
-    CallAndAssign {
-        id: Id,
-        symbol: String,
-        instance: String,
-        function: String,
-        args: Vec<String>,
-    },
-    Assign {
-        id: Id,
-        symbol: String,
-        value: String,
-    },
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum InstructionResult {
-    Ok { id: Id },
-    String { id: Id, value: String },
-}
-
-impl FromSlimReader for InstructionResult {
-    fn from_reader(reader: &mut impl BufRead) -> Result<Self> {
-        let [id, value] = <[String; 2]>::from_reader(reader)?;
-        let id = Id(id);
-        Ok(match value.as_str() {
-            "OK" => InstructionResult::Ok { id },
-            _ => InstructionResult::String { id, value },
-        })
-    }
-}
-
-trait ToSlimString {
-    fn to_slim_string(&self) -> String;
-}
-
-impl ToSlimString for String {
-    fn to_slim_string(&self) -> String {
-        format!("{:0>6}:{}", self.len(), self)
-    }
-}
-
-impl<'a> ToSlimString for &'a str {
-    fn to_slim_string(&self) -> String {
-        format!("{:0>6}:{}", self.len(), self)
-    }
-}
-
-impl<'a, T> ToSlimString for &'a [T]
-where
-    T: ToSlimString,
-{
-    fn to_slim_string(&self) -> String {
-        let mut result = String::from("[");
-        result += &format!("{:0>6}:", self.len());
-        for value in self.into_iter() {
-            result += &value.to_slim_string();
-            result += ":";
+fn process_files<R: Read, W: Write>(
+    connection: &mut SlimConnection<R, W>,
+    recursive: bool,
+    files: Vec<PathBuf>,
+) -> Result<bool> {
+    let mut fail = false;
+    for file in files {
+        let metadata = metadata(&file)?;
+        if metadata.is_dir() && recursive {
+            fail |= process_files(connection, recursive, get_list_of_files(file)?)?;
+            continue;
         }
-        result += "]";
-        result.to_slim_string()
-    }
-}
-
-impl<T, const S: usize> ToSlimString for [T; S]
-where
-    T: ToSlimString,
-{
-    fn to_slim_string(&self) -> String {
-        let mut result = String::from("[");
-        result += &format!("{:0>6}:", self.len());
-        for value in self.into_iter() {
-            result += &value.to_slim_string();
-            result += ":";
+        if metadata.is_file()
+            && file
+                .extension()
+                .map(|ext| ext.to_ascii_lowercase() == "md")
+                .unwrap_or(false)
+        {
+            fail |= process_markdown(connection, &file)?;
         }
-        result += "]";
-        result.to_slim_string()
     }
+    Ok(fail)
 }
 
-impl ToSlimString for Instruction {
-    fn to_slim_string(&self) -> String {
-        match self {
-            Self::Import { id, path } => [id.0.as_str(), "import", path.as_str()].to_slim_string(),
-            _ => todo!(),
+fn append_config_to_args(mut args: Args) -> Result<Args> {
+    match &args.configuration_file {
+        None => Ok(args),
+        Some(configuration_file) => {
+            let config_file = read_to_string(configuration_file)?.parse::<Table>()?;
+            args.port = args.port.or(config_file
+                .get("port")
+                .map(|port| port.as_integer().expect("Expect the port to be a number") as u16));
+            args.recursive = args
+                .recursive
+                .or(config_file.get("recursive").map(|recursive| {
+                    recursive
+                        .as_bool()
+                        .expect("Expect the recursive to be a boolean")
+                }));
+            args.slim_server_command = args.slim_server_command.or(config_file
+                .get("slim_server_command")
+                .map(|command| {
+                    command
+                        .as_str()
+                        .expect("Expect the slim server command to be a string")
+                        .to_string()
+                }));
+            args.files = if !args.files.is_empty() {
+                args.files
+            } else {
+                let test_dir = config_file
+                    .get("test_dir")
+                    .map(|test_dir| {
+                        test_dir
+                            .as_str()
+                            .expect("Expect the test dir to be a string")
+                    })
+                    .ok_or(anyhow!("You need to specify a test file or a test dir"))?;
+                get_list_of_files(test_dir)?
+            };
+            Ok(args)
         }
     }
 }
 
-trait FromSlimReader {
-    fn from_reader(reader: &mut impl BufRead) -> Result<Self>
-    where
-        Self: Sized;
-}
-
-impl FromSlimReader for String {
-    fn from_reader(reader: &mut impl BufRead) -> Result<Self> {
-        let len = read_len(reader)?;
-        let mut buffer = vec![0_u8; len];
-        reader.read_exact(&mut buffer)?;
-        Ok(String::from_utf8_lossy(&buffer).into_owned())
-    }
-}
-
-impl<T, const S: usize> FromSlimReader for [T; S]
-where
-    T: FromSlimReader,
-{
-    fn from_reader(reader: &mut impl BufRead) -> Result<Self> {
-        let result = Vec::from_reader(reader)?;
-        Ok(result
-            .try_into()
-            .map_err(|_| anyhow!("Missing elements from array"))?)
-    }
-}
-
-impl<T> FromSlimReader for Vec<T>
-where
-    T: FromSlimReader,
-{
-    fn from_reader(reader: &mut impl BufRead) -> Result<Self> {
-        let _ = read_len(reader)?; // TODO: Validate this len against the read bytes
-        let mut result = Vec::new();
-        reader.read_expected_byte(b'[')?;
-        let n_elements = read_len(reader)?;
-        for _ in 0..n_elements {
-            result.push(T::from_reader(reader)?);
-            reader.read_expected_byte(b':')?;
+fn connect_to_slim_server(port: u16, time_limit: Duration) -> Result<TcpStream> {
+    let start = Instant::now();
+    loop {
+        if let Ok(tcp_stream) = TcpStream::connect(format!("127.0.0.1:{}", port)) {
+            return Ok(tcp_stream);
         }
-        reader.read_expected_byte(b']')?;
-        Ok(result)
-    }
-}
-
-fn read_len(reader: &mut impl BufRead) -> Result<usize> {
-    let mut buffer = Vec::new();
-    buffer.reserve_exact(6);
-    reader.read_until(b':', &mut buffer)?;
-    Ok(String::from_utf8_lossy(&buffer[..buffer.len() - 1]).parse()?)
-}
-
-trait ReadByte {
-    fn read_byte(&mut self) -> Result<u8>;
-    fn read_expected_byte(&mut self, expected_byte: u8) -> Result<()> {
-        let byte = self.read_byte()?;
-        if byte == expected_byte {
-            Ok(())
-        } else {
-            bail!("Expected {expected_byte} but got {byte}")
+        if start.elapsed() > time_limit {
+            bail!("Failed to connect to slim server");
         }
+        sleep(Duration::from_millis(300))
     }
 }
 
-impl<R> ReadByte for R
-where
-    R: BufRead,
-{
-    fn read_byte(&mut self) -> Result<u8> {
-        let mut buf = [0; 1];
-        self.read_exact(&mut buf)?;
-        Ok(buf[0])
-    }
+fn get_list_of_files(dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
+    Ok(read_dir(dir.as_ref())?
+        .map(|file| file.map(|file| file.path().to_path_buf()))
+        .collect::<Result<Vec<PathBuf>, std::io::Error>>()?)
 }
