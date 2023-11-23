@@ -1,3 +1,5 @@
+use crate::InstructionResult;
+
 use super::Instruction;
 
 #[derive(PartialEq, Eq, Debug)]
@@ -61,29 +63,15 @@ where
 
 impl ToSlimString for Instruction {
     fn to_slim_string(&self) -> SlimString {
-        let mut buf = [0; ulid::ULID_LEN];
         match self {
-            Self::Import { id, path } => [
-                id.0.to_str(&mut buf)
-                    .expect("We should never fail this decoding"),
-                "import",
-                path.as_str(),
-            ]
-            .to_slim_string(),
+            Self::Import { id, path } => [id.0.as_str(), "import", path.as_str()].to_slim_string(),
             Self::Make {
                 id,
                 instance,
                 class,
                 args,
             } => [
-                [
-                    id.0.to_str(&mut buf)
-                        .expect("We should never fail this decoding"),
-                    "make",
-                    instance,
-                    class,
-                ]
-                .as_slice(),
+                [id.0.as_str(), "make", instance, class].as_slice(),
                 into_vec_str(args).as_slice(),
             ]
             .concat()
@@ -94,26 +82,14 @@ impl ToSlimString for Instruction {
                 function,
                 args,
             } => [
-                [
-                    id.0.to_str(&mut buf)
-                        .expect("We should never fail this decoding"),
-                    "call",
-                    instance,
-                    function,
-                ]
-                .as_slice(),
+                [id.0.as_str(), "call", instance, function].as_slice(),
                 into_vec_str(args).as_slice(),
             ]
             .concat()
             .to_slim_string(),
-            Self::Assign { id, symbol, value } => [
-                id.0.to_str(&mut buf)
-                    .expect("We should never fail this decoding"),
-                "assign",
-                symbol,
-                value,
-            ]
-            .to_slim_string(),
+            Self::Assign { id, symbol, value } => {
+                [id.0.as_str(), "assign", symbol, value].to_slim_string()
+            }
             Self::CallAndAssign {
                 id,
                 symbol,
@@ -121,19 +97,28 @@ impl ToSlimString for Instruction {
                 function,
                 args,
             } => [
-                [
-                    id.0.to_str(&mut buf)
-                        .expect("We should never fail this decoding"),
-                    "callAndAssign",
-                    symbol,
-                    instance,
-                    function,
-                ]
-                .as_slice(),
+                [id.0.as_str(), "callAndAssign", symbol, instance, function].as_slice(),
                 into_vec_str(args).as_slice(),
             ]
             .concat()
             .to_slim_string(),
+        }
+    }
+}
+
+impl ToSlimString for InstructionResult {
+    fn to_slim_string(&self) -> SlimString {
+        match self {
+            InstructionResult::Ok { id } => [id.0.as_str(), "OK"].to_slim_string(),
+            InstructionResult::Null { id } => [id.0.as_str(), "null"].to_slim_string(),
+            InstructionResult::String { id, value } => {
+                [id.0.as_str(), value.as_str()].to_slim_string()
+            }
+            InstructionResult::Exception {
+                id,
+                message,
+                _complete_message,
+            } => [id.0.as_str(), format!("__EXCEPTION__:{message}").as_str()].to_slim_string(),
         }
     }
 }
@@ -145,7 +130,7 @@ fn into_vec_str(args: &[String]) -> Vec<&str> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::slim::Id;
+    use crate::Id;
 
     #[test]
     fn test_empty_string() {

@@ -1,13 +1,11 @@
 use self::markdown_commands::{get_commands_from_markdown, Snooze};
-use crate::{
-    processor::{
-        slim_instructions_from_commands::get_instructions_from_commands,
-        validate_result::validate_result,
-    },
-    slim::SlimConnection,
+use crate::processor::{
+    slim_instructions_from_commands::get_instructions_from_commands,
+    validate_result::validate_result,
 };
 use anyhow::{anyhow, Result};
 use markdown::mdast::Node;
+use slim_protocol::SlimConnection;
 use std::{
     fs::read_to_string,
     io::{Read, Write},

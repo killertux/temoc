@@ -1,16 +1,30 @@
 use anyhow::{bail, Result};
 use fixtures::Calculator;
-use rust_slim::{ClassPath, SlimFixture};
-use std::collections::HashMap;
+use rust_slim::{ClassPath, SlimFixture, SlimServer};
+use std::{
+    net::TcpListener,
+};
 
 mod fixtures {
+    use rust_slim::fixture;
     use super::*;
+
+    #[derive(Default)]
     pub struct Calculator {
         a: i64,
         b: i64,
     }
 
+    #[fixture]
     impl Calculator {
+        fn set_a(&mut self, a: i64) {
+            self.a = a
+        }
+
+        fn set_b(&mut self, b: i64) {
+            self.b = b
+        }
+
         fn sum(&self) -> i64 {
             self.a + self.b
         }
@@ -29,12 +43,20 @@ mod fixtures {
     }
 
     impl SlimFixture for Calculator {
-        fn execute_method(&mut self, method: &str) -> Result<Option<String>> {
+        fn execute_method(&mut self, method: &str, args: Vec<String>) -> Result<Option<String>> {
             Ok(match method {
                 "sum" => Some(format!("{}", self.sum())),
                 "mul" => Some(format!("{}", self.mul())),
                 "div" => Some(format!("{}", self.div())),
                 "sub" => Some(format!("{}", self.sub())),
+                "set_a" => {
+                    self.set_a(args[0].parse()?);
+                    None
+                }
+                "set_b" => {
+                    self.set_b(args[0].parse()?);
+                    None
+                }
                 _ => bail!("Method not found"),
             })
         }
@@ -45,36 +67,13 @@ mod fixtures {
             format!("{}::Calculator", module_path!(),)
         }
     }
-
-    impl Default for Calculator {
-        fn default() -> Self {
-            Self { a: 0, b: 0 }
-        }
-    }
 }
 
-struct SlimServer {
-    fixtures: HashMap<String, Box<dyn Fn() -> Box<dyn SlimFixture>>>,
-}
-
-impl SlimServer {
-    pub fn new() -> Self {
-        Self {
-            fixtures: HashMap::new(),
-        }
-    }
-
-    pub fn add_fixture<T: ClassPath + Default + SlimFixture + 'static>(&mut self) {
-        self.fixtures.insert(
-            dbg!(T::class_path()),
-            Box::new(|| Box::new(T::default()) as Box<dyn SlimFixture>)
-                as Box<dyn Fn() -> Box<dyn SlimFixture>>,
-        );
-    }
-}
-
-fn main() {
-    let mut server = SlimServer::new();
+fn main() -> Result<()> {
+    let listener = TcpListener::bind(format!("0.0.0.0:8426"))?;
+    let (stream, _) = listener.accept()?;
+    let mut server = SlimServer::new(stream.try_clone()?, stream);
     server.add_fixture::<Calculator>();
-    println!("Execute the slim server")
+    server.run()?;
+    Ok(())
 }

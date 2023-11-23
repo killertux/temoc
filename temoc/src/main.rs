@@ -12,10 +12,9 @@ use std::{
 };
 use toml::Table;
 
-use crate::slim::SlimConnection;
+use slim_protocol::SlimConnection;
 
 mod processor;
-mod slim;
 
 /// Test markdown files using a slim server
 #[derive(Parser, Debug)]

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use ulid::Ulid;
 
-use crate::slim::{Id, Instruction};
+use slim_protocol::{Id, Instruction};
 
 use super::markdown_commands::{Class, MarkdownCommand, MethodName, Position, Snooze, Value};
 

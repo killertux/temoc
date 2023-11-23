@@ -1,5 +1,5 @@
-use self::slim_deserialize::FromSlimReader;
-use self::slim_serialize::ToSlimString;
+pub use self::slim_deserialize::FromSlimReader;
+pub use self::slim_serialize::ToSlimString;
 use anyhow::{anyhow, bail, Result};
 use std::{
     fmt::Display,
@@ -90,15 +90,15 @@ impl SlimVersion {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct Id(Ulid);
+pub struct Id(String);
 
 impl Id {
     pub fn new() -> Self {
-        Self(Ulid::new())
+        Self(Ulid::new().to_string())
     }
 
     pub fn from_string(string: String) -> Result<Self> {
-        Ok(Self(Ulid::from_string(&string)?))
+        Ok(Self(string))
     }
 }
 
@@ -159,6 +159,12 @@ pub enum InstructionResult {
         id: Id,
         value: String,
     },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ByeOrSlimInstructions {
+    Bye,
+    Instructions(Vec<Instruction>),
 }
 
 #[cfg(test)]

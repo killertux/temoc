@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use anyhow::{bail, Result};
 
-use crate::slim::InstructionResult;
+use slim_protocol::InstructionResult;
 
 use super::{markdown_commands::Snooze, slim_instructions_from_commands::ExpectedResult};
 
@@ -254,10 +254,8 @@ pub fn validate_result(
 
 #[cfg(test)]
 mod test {
-    use crate::{
-        processor::markdown_commands::{MethodName, Position},
-        slim::Id,
-    };
+    use crate::processor::markdown_commands::{MethodName, Position};
+    use slim_protocol::Id;
 
     use super::*;
 

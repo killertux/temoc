@@ -1,7 +1,9 @@
 use anyhow::{anyhow, bail, Result};
 use std::io::BufRead;
 
-use super::{Id, InstructionResult};
+use crate::Instruction;
+
+use super::{ByeOrSlimInstructions, Id, InstructionResult};
 
 pub trait FromSlimReader {
     fn from_reader(reader: &mut impl BufRead) -> Result<Self>
@@ -82,6 +84,74 @@ impl FromSlimReader for InstructionResult {
                 }
             }
         })
+    }
+}
+
+impl FromSlimReader for Instruction {
+    fn from_reader(reader: &mut impl BufRead) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        let mut data: Vec<String> = Vec::from_reader(reader)?;
+        data.reverse();
+
+        let id = Id::from_string(data.pop().ok_or(anyhow!("Expected data"))?)?;
+        match data.pop().ok_or(anyhow!("Expectd instruction"))?.as_str() {
+            "import" => {
+                let path = data.pop().ok_or(anyhow!("Expected path"))?;
+                Ok(Instruction::Import { id, path })
+            }
+            "make" => {
+                let instance = data.pop().ok_or(anyhow!("Expected instance"))?;
+                let class = data.pop().ok_or(anyhow!("Expected class"))?;
+                data.reverse();
+                Ok(Instruction::Make {
+                    id,
+                    instance,
+                    class,
+                    args: data,
+                })
+            }
+            "call" => {
+                let instance = data.pop().ok_or(anyhow!("Expected instance"))?;
+                let function = data.pop().ok_or(anyhow!("Expected function"))?;
+                data.reverse();
+                Ok(Instruction::Call {
+                    id,
+                    instance,
+                    function,
+                    args: data,
+                })
+            }
+            other => todo!("Not implemented {other}"),
+        }
+    }
+}
+
+impl FromSlimReader for ByeOrSlimInstructions {
+    fn from_reader(reader: &mut impl BufRead) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        let _ = read_len(reader)?;
+        match reader.read_byte()? {
+            b'[' => {
+                let mut result = Vec::new();
+                let n_elements = read_len(reader)?;
+                for _ in 0..n_elements {
+                    result.push(Instruction::from_reader(reader)?);
+                    reader.read_expected_byte(b':')?;
+                }
+                reader.read_expected_byte(b']')?;
+                Ok(ByeOrSlimInstructions::Instructions(result))
+            }
+            b'b' => {
+                reader.read_expected_byte(b'y')?;
+                reader.read_expected_byte(b'e')?;
+                Ok(ByeOrSlimInstructions::Bye)
+            }
+            other => bail!("Non expected byte {other}"),
+        }
     }
 }
 
