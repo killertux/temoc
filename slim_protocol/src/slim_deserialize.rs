@@ -68,13 +68,13 @@ impl FromSlimReader for InstructionResult {
                         completed_message += message;
                         completed_message += rest;
                         InstructionResult::Exception {
-                            id: id,
+                            id,
                             message: message.to_string(),
                             _complete_message: completed_message.to_string(),
                         }
                     } else {
                         InstructionResult::Exception {
-                            id: id,
+                            id,
                             message: message.to_string(),
                             _complete_message: message.to_string(),
                         }

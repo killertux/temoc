@@ -300,8 +300,8 @@ mod test {
                     ExpectedResult::String {
                         id: id.clone(),
                         value: "Value".into(),
-                        method_name: method_name,
-                        position: position,
+                        method_name,
+                        position,
                     },
                     Snooze::not_snooze(),
                 ),

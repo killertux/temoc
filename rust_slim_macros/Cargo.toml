@@ -6,6 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+convert_case = "0.6.0"
+proc-macro2 = "1.0.69"
 quote = "1.0.33"
 syn = { version = "2", features = ["extra-traits", "full"] }
 
