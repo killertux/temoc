@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Result};
 use std::io::BufRead;
 
-use crate::Instruction;
+use crate::{ExceptionMessage, Instruction};
 
 use super::{ByeOrSlimInstructions, Id, InstructionResult};
 
@@ -59,25 +59,9 @@ impl FromSlimReader for InstructionResult {
             "null" => InstructionResult::Null { id },
             other => {
                 if let Some(message) = other.strip_prefix("__EXCEPTION__:") {
-                    if let Some(pos) = message.find("message:<<") {
-                        let mut completed_message = message[0..pos].to_string();
-                        let (_, rest) = message.split_at(pos + 10);
-                        let Some((message, rest)) = rest.split_once(">>") else {
-                            bail!("Failed processing exception {message}")
-                        };
-                        completed_message += message;
-                        completed_message += rest;
-                        InstructionResult::Exception {
-                            id,
-                            message: message.to_string(),
-                            _complete_message: completed_message.to_string(),
-                        }
-                    } else {
-                        InstructionResult::Exception {
-                            id,
-                            message: message.to_string(),
-                            _complete_message: message.to_string(),
-                        }
+                    InstructionResult::Exception {
+                        id,
+                        message: ExceptionMessage::new(message.into()),
                     }
                 } else {
                     InstructionResult::String { id, value }
@@ -260,19 +244,26 @@ mod test {
         assert_eq!(
             InstructionResult::Exception {
                 id: id.clone(),
-                message: "Message".into(),
-                _complete_message: "Message".into()
+                message: ExceptionMessage::new("Message".into()),
             },
             InstructionResult::from_reader(&mut Cursor::new(
                 "000073:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:0000021:__EXCEPTION__:Message:]"
             ))?
         );
+        let exception = InstructionResult::from_reader(&mut Cursor::new(
+            "000100:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:0000048:__EXCEPTION__:Some Exception message:<<Message>>:]"
+        ))?;
         assert_eq!(
-            InstructionResult::Exception { id: id.clone(), message: "Message".into(), _complete_message: "Some Exception Message".into() },
-            InstructionResult::from_reader(&mut Cursor::new(
-                "000100:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:0000048:__EXCEPTION__:Some Exception message:<<Message>>:]"
-            ))?
+            InstructionResult::Exception {
+                id: id.clone(),
+                message: ExceptionMessage::new("Some Exception message:<<Message>>".into())
+            },
+            exception
         );
+        let InstructionResult::Exception { id: _, message } = exception else {
+            bail!("Expected exception")
+        };
+        assert_eq!("Message", message.pretty_message()?);
         Ok(())
     }
 }

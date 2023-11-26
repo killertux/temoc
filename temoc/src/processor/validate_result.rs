@@ -70,11 +70,7 @@ pub fn validate_result(
                         snooze.clone(),
                     ));
                 }
-                InstructionResult::Exception {
-                    id,
-                    message,
-                    _complete_message,
-                } => {
+                InstructionResult::Exception { id, message } => {
                     if id != expected_id {
                         failures.push((
                             format!(
@@ -85,7 +81,7 @@ pub fn validate_result(
                         continue;
                     }
                     failures.push((
-                        format!("Expected OK, got Exception `{message}` in {file_path}:{position} for method call {}", method_name.0),
+                        format!("Expected OK, got Exception `{}` in {file_path}:{position} for method call {}", message.pretty_message()?, method_name.0),
                         snooze.clone(),
                     ));
                 }
@@ -135,11 +131,7 @@ pub fn validate_result(
                         snooze.clone(),
                     ));
                 }
-                InstructionResult::Exception {
-                    id,
-                    message,
-                    _complete_message,
-                } => {
+                InstructionResult::Exception { id, message } => {
                     if id != expected_id {
                         failures.push((
                             format!(
@@ -150,7 +142,10 @@ pub fn validate_result(
                         continue;
                     }
                     failures.push((
-                        format!("Expected OK, got Exception `{message}` in {file_path}:{position}"),
+                        format!(
+                            "Expected OK, got Exception `{}` in {file_path}:{position}",
+                            message.pretty_message()?
+                        ),
                         snooze.clone(),
                     ));
                 }
@@ -208,11 +203,7 @@ pub fn validate_result(
                         ), snooze.clone()));
                     }
                 }
-                InstructionResult::Exception {
-                    id,
-                    message,
-                    _complete_message,
-                } => {
+                InstructionResult::Exception { id, message } => {
                     if id != expected_id {
                         failures.push((
                             format!(
@@ -223,7 +214,7 @@ pub fn validate_result(
                         continue;
                     }
                     failures.push((
-                        format!("Expected OK, got Exception `{message}` in {file_path}:{position} for method call {}", method_name.0),
+                        format!("Expected OK, got Exception `{}` in {file_path}:{position} for method call {}", message.pretty_message()?, method_name.0),
                         snooze.clone(),
                     ));
                 }
@@ -231,11 +222,7 @@ pub fn validate_result(
             ExpectedResult::Any { id: expected_id } => match result {
                 InstructionResult::Null { id }
                 | InstructionResult::Ok { id }
-                | InstructionResult::Exception {
-                    id,
-                    message: _,
-                    _complete_message: _,
-                }
+                | InstructionResult::Exception { id, message: _ }
                 | InstructionResult::String { id, value: _ } => {
                     if id != expected_id {
                         failures.push((

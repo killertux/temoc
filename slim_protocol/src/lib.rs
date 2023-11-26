@@ -94,11 +94,17 @@ pub struct Id(String);
 
 impl Id {
     pub fn new() -> Self {
-        Self(Ulid::new().to_string())
+        Self::default()
     }
 
     pub fn from_string(string: String) -> Result<Self> {
         Ok(Self(string))
+    }
+}
+
+impl Default for Id {
+    fn default() -> Self {
+        Self(Ulid::new().to_string())
     }
 }
 
@@ -144,21 +150,35 @@ pub enum Instruction {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum InstructionResult {
-    Ok {
-        id: Id,
-    },
-    Null {
-        id: Id,
-    },
-    Exception {
-        id: Id,
-        message: String,
-        _complete_message: String,
-    },
-    String {
-        id: Id,
-        value: String,
-    },
+    Ok { id: Id },
+    Null { id: Id },
+    Exception { id: Id, message: ExceptionMessage },
+    String { id: Id, value: String },
+}
+
+#[derive(PartialEq, Eq, Debug)]
+pub struct ExceptionMessage(String);
+
+impl ExceptionMessage {
+    pub fn new(message: String) -> Self {
+        Self(message)
+    }
+
+    pub fn raw_message(&self) -> &str {
+        &self.0
+    }
+
+    pub fn pretty_message(&self) -> Result<&str> {
+        if let Some(pos) = self.0.find("message:<<") {
+            let (_, rest) = self.0.split_at(pos + 10);
+            let Some((message, _)) = rest.split_once(">>") else {
+                bail!("Failed processing exception {}", self.0)
+            };
+            Ok(message)
+        } else {
+            Ok(&self.0)
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]

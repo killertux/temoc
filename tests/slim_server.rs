@@ -41,7 +41,13 @@ mod fixtures {
 }
 
 fn main() -> Result<()> {
-    let listener = TcpListener::bind("0.0.0.0:8426".to_string())?;
+    let mut args = std::env::args();
+    args.next();
+    let Some(port) = args.next() else {
+        println!("No port provided");
+        return Ok(());
+    };
+    let listener = TcpListener::bind(format!("0.0.0.0:{port}").to_string())?;
     let (stream, _) = listener.accept()?;
     let mut server = SlimServer::new(stream.try_clone()?, stream);
     server.add_fixture::<Calculator>();

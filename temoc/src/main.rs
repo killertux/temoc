@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Result};
-use clap::Parser;
+use clap::{Parser, ArgAction};
 use processor::process_markdown;
 use std::{
     fs::{metadata, read_dir, read_to_string},
@@ -30,11 +30,14 @@ struct Args {
     #[arg(short = 'x', long)]
     execute_server_command: Option<String>,
     /// Recursively traverse files and directories to test
-    #[arg(short, long)]
-    recursive: bool,
+    #[arg(short, long, action(ArgAction::SetTrue))]
+    recursive: Option<bool>,
     /// Show snoozed errors
-    #[arg(short, long, default_value_t = false)]
-    show_snoozed: bool,
+    #[arg(short, long, action(ArgAction::SetTrue))]
+    show_snoozed: Option<bool>,
+    /// Show STDERR and STDOUT of the slim server
+    #[arg(short, long, action(ArgAction::SetTrue))]
+    verbose: Option<bool>,
     /// List of files to test
     files: Vec<PathBuf>,
 }
@@ -43,13 +46,15 @@ fn main() -> Result<()> {
     let args = append_config_to_args(Args::parse())?;
     let mut slim_server = None;
 
-    if let Some(command) = args.execute_server_command {
+    if let Some(command) = &args.execute_server_command {
+        let stdout = build_stdio(&args);
+        let stderr = build_stdio(&args);
         slim_server = Some(
             Command::new("sh")
                 .arg("-c")
                 .arg(command)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stdout(stdout)
+                .stderr(stderr)
                 .spawn()?,
         );
     }
@@ -59,8 +64,8 @@ fn main() -> Result<()> {
 
     let fail = process_files(
         &mut connection,
-        args.recursive,
-        args.show_snoozed,
+        args.recursive.unwrap_or(false),
+        args.show_snoozed.unwrap_or(false),
         args.files,
     )?;
     connection.close()?;
@@ -76,6 +81,14 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn build_stdio(args: &Args) -> Stdio {
+    if args.verbose.unwrap_or(false) {
+        Stdio::inherit()
+    } else {
+        Stdio::null()
+    }
 }
 
 fn process_files<R: Read, W: Write>(
@@ -116,17 +129,27 @@ fn append_config_to_args(mut args: Args) -> Result<Args> {
             args.port = args.port.or(config_file
                 .get("port")
                 .map(|port| port.as_integer().expect("Expect the port to be a number") as u16));
-            args.recursive = args.recursive
-                || config_file
-                    .get("recursive")
-                    .map(|recursive| {
-                        recursive
+            args.recursive = args
+                .recursive
+                .or(config_file.get("recursive").map(|recursive| {
+                    recursive
+                        .as_bool()
+                        .expect("Expect the recursive to be a boolean")
+                }));
+            args.show_snoozed =
+                args.show_snoozed
+                    .or(config_file.get("show_snoozed").map(|show_snoozed| {
+                        show_snoozed
                             .as_bool()
-                            .expect("Expect the recursive to be a boolean")
-                    })
-                    .unwrap_or(false);
+                            .expect("Expect the show_snoozed to be a boolean")
+                    }));
+            args.verbose = args.verbose.or(config_file.get("verbose").map(|verbose| {
+                verbose
+                    .as_bool()
+                    .expect("Expect the verbose to be a boolean")
+            }));
             args.execute_server_command = args.execute_server_command.or(config_file
-                .get("slim_server_command")
+                .get("execute_server_command")
                 .map(|command| {
                     command
                         .as_str()

@@ -114,11 +114,11 @@ impl ToSlimString for InstructionResult {
             InstructionResult::String { id, value } => {
                 [id.0.as_str(), value.as_str()].to_slim_string()
             }
-            InstructionResult::Exception {
-                id,
-                message,
-                _complete_message,
-            } => [id.0.as_str(), format!("__EXCEPTION__:{message}").as_str()].to_slim_string(),
+            InstructionResult::Exception { id, message } => [
+                id.0.as_str(),
+                format!("__EXCEPTION__:{}", message.raw_message()).as_str(),
+            ]
+            .to_slim_string(),
         }
     }
 }

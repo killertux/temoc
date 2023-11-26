@@ -4,7 +4,7 @@ This is the example of an acceptance test for a calculator.
 
 So, in this calculator we can sum values like this:
 
-[//]: # (import Fixtures)
+[//]: # (import SlimServer.Fixtures)
 
 [//]: # (decisionTable Calculator)
 

@@ -1,23 +1,39 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use convert_case::{Case, Casing};
 pub use rust_slim_macros::*;
 use slim_protocol::{
-    ByeOrSlimInstructions, FromSlimReader, Instruction, InstructionResult, ToSlimString,
+    ByeOrSlimInstructions, ExceptionMessage, FromSlimReader, Instruction, InstructionResult,
+    ToSlimString,
 };
 use std::collections::HashMap;
 use std::io::{BufReader, Read, Write};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ExecuteMethodError {
-    MethodNotFound(String),
+    MethodNotFound { method: String, class: String },
     ArgumentParsingError(String),
     ExecutionError(String),
 }
 
 impl ToString for ExecuteMethodError {
     fn to_string(&self) -> String {
-        todo!()
+        match self {
+            ExecuteMethodError::MethodNotFound { method, class } => {
+                format!("NO_METHOD_IN_CLASS {method} {class}")
+            }
+            ExecuteMethodError::ArgumentParsingError(argument) => {
+                format!("NO_CONVERTER_FOR_ARGUMENT_NUMBER {argument}")
+            }
+            ExecuteMethodError::ExecutionError(error) => error.to_string(),
+        }
     }
+}
+
+pub fn from_rust_module_path_to_class_path(rust_module_path: &str) -> String {
+    rust_module_path
+        .split("::")
+        .map(|s| s.to_case(Case::Pascal))
+        .join(".")
 }
 
 pub trait ToSlimResultString {
@@ -110,8 +126,9 @@ where
     }
 }
 
+pub type SlimClosureConstructor = Box<dyn Fn(Vec<String>) -> Box<dyn SlimFixture>>;
 pub struct SlimServer<R: Read, W: Write> {
-    fixtures: HashMap<String, Box<dyn Fn(Vec<String>) -> Box<dyn SlimFixture>>>,
+    fixtures: HashMap<String, SlimClosureConstructor>,
     instances: HashMap<String, Box<dyn SlimFixture>>,
     class_paths: Vec<String>,
     reader: BufReader<R>,
@@ -147,10 +164,6 @@ impl<R: Read, W: Write> SlimServer<R, W> {
                     for instruction in instructions {
                         match instruction {
                             Instruction::Import { id, path } => {
-                                let path = path
-                                    .split('.')
-                                    .map(|part| part.to_case(Case::Snake))
-                                    .join("::");
                                 self.class_paths.push(path);
                                 results.push(InstructionResult::Ok { id })
                             }
@@ -159,15 +172,14 @@ impl<R: Read, W: Write> SlimServer<R, W> {
                                 instance,
                                 class,
                                 args,
-                            } => match self.find_fixture(class) {
+                            } => match self.find_fixture(&class) {
                                 Some(fixture) => {
                                     self.instances.insert(instance, fixture(args));
                                     results.push(InstructionResult::Ok { id })
                                 }
                                 None => results.push(InstructionResult::Exception {
                                     id,
-                                    message: "Class not found".into(),
-                                    _complete_message: "Class not found".into(),
+                                    message: ExceptionMessage::new(format!("NO CLASS: {class}")),
                                 }),
                             },
                             Instruction::Call {
@@ -176,10 +188,15 @@ impl<R: Read, W: Write> SlimServer<R, W> {
                                 function,
                                 args,
                             } => {
-                                let instance = self
-                                    .instances
-                                    .get_mut(&instance)
-                                    .ok_or(anyhow!("Failed loading instance"))?;
+                                let Some(instance) = self.instances.get_mut(&instance) else {
+                                    results.push(InstructionResult::Exception {
+                                        id,
+                                        message: ExceptionMessage::new(format!(
+                                            "NO_INSTANCE: {instance}"
+                                        )),
+                                    });
+                                    continue;
+                                };
                                 let function = function.to_case(Case::Snake);
 
                                 match instance.execute_method(&function, args) {
@@ -191,8 +208,7 @@ impl<R: Read, W: Write> SlimServer<R, W> {
                                     }
                                     Err(error) => results.push(InstructionResult::Exception {
                                         id,
-                                        message: error.to_string(),
-                                        _complete_message: error.to_string(),
+                                        message: ExceptionMessage::new(error.to_string()),
                                     }),
                                 }
                             }
@@ -206,20 +222,12 @@ impl<R: Read, W: Write> SlimServer<R, W> {
         Ok(())
     }
 
-    fn find_fixture(
-        &self,
-        class: String,
-    ) -> Option<&Box<dyn Fn(Vec<String>) -> Box<dyn SlimFixture>>> {
-        let mut class: Vec<String> = class.split('.').map(|s| s.to_case(Case::Snake)).collect();
-        class
-            .last_mut()
-            .map(|last| *last = last.to_case(Case::Pascal));
-        let class = class.join("::");
-        if let Some(fixture) = self.fixtures.get(&class) {
+    fn find_fixture(&self, class: &str) -> Option<&SlimClosureConstructor> {
+        if let Some(fixture) = self.fixtures.get(class) {
             return Some(fixture);
         }
         for class_path in self.class_paths.iter() {
-            let class = format!("{class_path}::{class}");
+            let class = format!("{class_path}.{class}");
             if let Some(fixture) = self.fixtures.get(&class) {
                 return Some(fixture);
             }
