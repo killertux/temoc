@@ -1,4 +1,6 @@
-execute_server_command = "cargo test --test slim_server"
+execute_server_command = "cargo test --test slim_server 8426"
 port = 8426
 test_dir = "example/"
 recursive = true
+show_snoozed = true
+verbose = false

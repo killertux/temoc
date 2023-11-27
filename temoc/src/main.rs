@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Result};
-use clap::{Parser, ArgAction};
+use clap::Parser;
 use processor::process_markdown;
 use std::{
     fs::{metadata, read_dir, read_to_string},
@@ -30,14 +30,14 @@ struct Args {
     #[arg(short = 'x', long)]
     execute_server_command: Option<String>,
     /// Recursively traverse files and directories to test
-    #[arg(short, long, action(ArgAction::SetTrue))]
-    recursive: Option<bool>,
+    #[arg(short, long)]
+    recursive: bool,
     /// Show snoozed errors
-    #[arg(short, long, action(ArgAction::SetTrue))]
-    show_snoozed: Option<bool>,
+    #[arg(short, long)]
+    show_snoozed: bool,
     /// Show STDERR and STDOUT of the slim server
-    #[arg(short, long, action(ArgAction::SetTrue))]
-    verbose: Option<bool>,
+    #[arg(short, long)]
+    verbose: bool,
     /// List of files to test
     files: Vec<PathBuf>,
 }
@@ -64,8 +64,8 @@ fn main() -> Result<()> {
 
     let fail = process_files(
         &mut connection,
-        args.recursive.unwrap_or(false),
-        args.show_snoozed.unwrap_or(false),
+        args.recursive,
+        args.show_snoozed,
         args.files,
     )?;
     connection.close()?;
@@ -84,7 +84,7 @@ fn main() -> Result<()> {
 }
 
 fn build_stdio(args: &Args) -> Stdio {
-    if args.verbose.unwrap_or(false) {
+    if args.verbose {
         Stdio::inherit()
     } else {
         Stdio::null()
@@ -129,25 +129,33 @@ fn append_config_to_args(mut args: Args) -> Result<Args> {
             args.port = args.port.or(config_file
                 .get("port")
                 .map(|port| port.as_integer().expect("Expect the port to be a number") as u16));
-            args.recursive = args
-                .recursive
-                .or(config_file.get("recursive").map(|recursive| {
-                    recursive
-                        .as_bool()
-                        .expect("Expect the recursive to be a boolean")
-                }));
-            args.show_snoozed =
-                args.show_snoozed
-                    .or(config_file.get("show_snoozed").map(|show_snoozed| {
+            args.recursive = args.recursive
+                || config_file
+                    .get("recursive")
+                    .map(|recursive| {
+                        recursive
+                            .as_bool()
+                            .expect("Expect the recursive to be a boolean")
+                    })
+                    .unwrap_or_default();
+            args.show_snoozed = args.show_snoozed
+                || config_file
+                    .get("show_snoozed")
+                    .map(|show_snoozed| {
                         show_snoozed
                             .as_bool()
                             .expect("Expect the show_snoozed to be a boolean")
-                    }));
-            args.verbose = args.verbose.or(config_file.get("verbose").map(|verbose| {
-                verbose
-                    .as_bool()
-                    .expect("Expect the verbose to be a boolean")
-            }));
+                    })
+                    .unwrap_or_default();
+            args.verbose = args.verbose
+                || config_file
+                    .get("verbose")
+                    .map(|verbose| {
+                        verbose
+                            .as_bool()
+                            .expect("Expect the verbose to be a boolean")
+                    })
+                    .unwrap_or_default();
             args.execute_server_command = args.execute_server_command.or(config_file
                 .get("execute_server_command")
                 .map(|command| {
