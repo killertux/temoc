@@ -348,7 +348,6 @@ dependencies = [
  "convert_case",
  "rust_slim_macros",
  "slim_protocol",
- "ulid",
 ]
 
 [[package]]

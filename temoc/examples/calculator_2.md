@@ -3,7 +3,7 @@
 We can have multiple files to be tested
 
 
-[//]: # (decisionTable SlimServer.Fixtures.Calculator)
+[//]: # (decisionTable Calculator.Fixtures.Calculator)
 
 | a  | b   | sub? |
 |----|-----|------|
@@ -14,7 +14,7 @@ We can have multiple files to be tested
 
 We can also name our columns with a `set`
 
-[//]: # (decisionTable SlimServer.Fixtures.Calculator )
+[//]: # (decisionTable Calculator.Fixtures.Calculator )
 
 | setA | set B | div? |
 |------|-------|------|
@@ -25,7 +25,7 @@ We can also name our columns with a `set`
 
 And we still need to implement exponential:
 
-[//]: # (decisionTable SlimServer.Fixtures.Calculator -- snooze until 2099-12-31 )
+[//]: # (decisionTable Calculator.Fixtures.Calculator -- snooze until 2099-12-31 )
 
 | a  | b   | exp? |
 |----|-----|------|

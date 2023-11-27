@@ -16,9 +16,4 @@ ulid = "1"
 slim_protocol = { path = "../slim_protocol"}
 
 [dev-dependencies]
-rust_slim = { path = "../rust_slim/" }
-
-[[test]]
-name = "slim_server"
-path = "../tests/slim_server.rs"
-harness = false
+rust_slim = { path = "../rust_slim/", features = ["macros"]}

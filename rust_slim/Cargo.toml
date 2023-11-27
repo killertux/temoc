@@ -7,7 +7,9 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
-ulid = "1"
 slim_protocol = {path = "../slim_protocol"}
 convert_case = "0.6.0"
-rust_slim_macros = {path = "../rust_slim_macros"}
+rust_slim_macros = {path = "../rust_slim_macros", optional = true}
+
+[features]
+macros = ["dep:rust_slim_macros"]
