@@ -18,6 +18,8 @@ jobs:
             archive: zip
     steps:
       - uses: actions/checkout@master
+      - name: Change dir
+        run: cd temoc/
       - name: Compile and release
         uses: rust-build/rust-build.action@v1.4.4
         env:
