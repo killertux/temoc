@@ -199,7 +199,7 @@ impl<R: Read, W: Write> SlimServer<R, W> {
         args.into_iter().map(|arg| self.parse_symbol(arg)).collect()
     }
 
-    fn parse_symbol<'a>(&self, mut value: String) -> String {
+    fn parse_symbol(&self, mut value: String) -> String {
         while let Some((before, after)) = value.split_once('$') {
             if let Some((name, rest)) = after.split_once(' ') {
                 let mut new_value = String::from(before);

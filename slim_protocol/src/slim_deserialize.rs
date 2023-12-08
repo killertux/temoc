@@ -159,11 +159,9 @@ impl FromSlimReader for ByeOrSlimInstructions {
                 reader.read_expected_byte(b'e')?;
                 Ok(ByeOrSlimInstructions::Bye)
             }
-            other => {
-                return Err(FromSlimReaderError::Other(format!(
-                    "Non expected byte {other}"
-                )))
-            }
+            other => Err(FromSlimReaderError::Other(format!(
+                "Non expected byte {other}"
+            ))),
         }
     }
 }
@@ -175,10 +173,10 @@ trait ReadByte {
         if byte == expected_byte {
             Ok(())
         } else {
-            return Err(std::io::Error::new(
+            Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "Expected {expected_byte} but got {byte}",
-            ));
+            ))
         }
     }
 }
@@ -204,14 +202,14 @@ fn read_len(reader: &mut impl BufRead) -> Result<usize, std::io::Error> {
             "Failure reading from Slim Server",
         ));
     }
-    Ok(String::from_utf8_lossy(&buffer[..buffer.len() - 1])
+    String::from_utf8_lossy(&buffer[..buffer.len() - 1])
         .parse()
         .map_err(|_| {
             std::io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Failure converting read data to a number",
             )
-        })?)
+        })
 }
 
 #[cfg(test)]

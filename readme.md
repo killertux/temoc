@@ -28,3 +28,12 @@ Temoc is written in rust, you can install the rust toolchain [here](https://rust
 ## Running Temoc
 
 Once you have compiled it, you can run `./temoc --help` to see the list of commands. Basically you will need to specify a command to start the slim server (your plugin should help you on how to do this), a port to be used in the connection (current we don't support STDIN,STOUT communication) and a list of markdown files to test. You can also write a configuration file to have a default list of parameters, you can look at an example [here](https://github.com/killertux/temoc/tree/master/Config.toml.example)
+
+Here is an example of the output of running Temoc for the [Calculator Example](https://github.com/killertux/temoc/tree/master/temoc/examples)
+
+```
+
+Testing file temoc/examples/calculator.md...OK
+Testing file temoc/examples/calculator_2.md...SNOOZED
+
+```

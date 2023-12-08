@@ -344,6 +344,7 @@ dependencies = [
 name = "rust_slim"
 version = "0.1.2"
 dependencies = [
+ "anyhow",
  "convert_case",
  "rust_slim_macros",
  "slim_protocol",

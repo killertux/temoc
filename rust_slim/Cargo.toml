@@ -17,5 +17,8 @@ convert_case = "0.6.0"
 rust_slim_macros = {path = "../rust_slim_macros", optional = true}
 thiserror = "1"
 
+[dev-dependencies]
+anyhow = "1"
+
 [features]
 macros = ["dep:rust_slim_macros"]

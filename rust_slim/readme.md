@@ -11,4 +11,4 @@ It does not support using the STOUD and STDIN for comunication.
 
 This is currently in an unstable version. The general API can change in the next versions.
 
-For more details, take a look at the [documentation](https://docs.rs/rust_slim/0.1.0/rust_slim/)
+For more details, take a look at the [documentation](https://docs.rs/rust_slim/latest/rust_slim/)
