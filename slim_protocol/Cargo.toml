@@ -3,7 +3,7 @@ name = "slim_protocol"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-
+description = "General Slim Protocol stuff. Used internally by rust_slim and Temoc"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
