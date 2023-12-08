@@ -1,5 +1,7 @@
 use crate::ExecuteMethodError;
 
+/// Converts the result of a method into a result that the SlimServer can handle. This is mainly used so you can return whatever you want in a method and we can convert it inside the macro expansion of the `[fixture]` macro. If you are implementating the [SlimFixture](crate::SlimFixture) manually, you can ignore this.
+/// It has implementations for most basic types.
 pub trait ToSlimResultString {
     fn to_slim_result_string(self) -> Result<String, ExecuteMethodError>;
 }

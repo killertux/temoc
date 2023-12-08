@@ -1,5 +1,5 @@
 use anyhow::Result;
-use fixtures::Calculator;
+use fixtures::CalculatorFixture;
 use rust_slim::SlimServer;
 use std::net::TcpListener;
 
@@ -7,13 +7,13 @@ mod fixtures {
     use rust_slim::fixture;
 
     #[derive(Default)]
-    pub struct Calculator {
+    pub struct CalculatorFixture {
         a: i64,
         b: i64,
     }
 
     #[fixture]
-    impl Calculator {
+    impl CalculatorFixture {
         pub fn set_a(&mut self, a: i64) {
             self.a = a
         }
@@ -44,7 +44,7 @@ fn main() -> Result<()> {
     let listener = TcpListener::bind(format!("0.0.0.0:8426").to_string())?;
     let (stream, _) = listener.accept()?;
     let mut server = SlimServer::new(stream.try_clone()?, stream);
-    server.add_fixture::<Calculator>();
+    server.add_fixture::<CalculatorFixture>();
     server.run()?;
     Ok(())
 }

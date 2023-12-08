@@ -1,18 +1,26 @@
-use anyhow::{anyhow, bail, Result};
-use std::io::BufRead;
+use std::io::{self, BufRead};
+use thiserror::Error;
 
 use crate::{ExceptionMessage, Instruction};
 
 use super::{ByeOrSlimInstructions, Id, InstructionResult};
 
+#[derive(Debug, Error)]
+pub enum FromSlimReaderError {
+    #[error(transparent)]
+    IoError(#[from] std::io::Error),
+    #[error("{0}")]
+    Other(String),
+}
+
 pub trait FromSlimReader {
-    fn from_reader(reader: &mut impl BufRead) -> Result<Self>
+    fn from_reader(reader: &mut impl BufRead) -> Result<Self, FromSlimReaderError>
     where
         Self: Sized;
 }
 
 impl FromSlimReader for String {
-    fn from_reader(reader: &mut impl BufRead) -> Result<Self> {
+    fn from_reader(reader: &mut impl BufRead) -> Result<Self, FromSlimReaderError> {
         let len = read_len(reader)?;
         let mut buffer = vec![0_u8; len];
         reader.read_exact(&mut buffer)?;
@@ -24,11 +32,11 @@ impl<T, const S: usize> FromSlimReader for [T; S]
 where
     T: FromSlimReader,
 {
-    fn from_reader(reader: &mut impl BufRead) -> Result<Self> {
+    fn from_reader(reader: &mut impl BufRead) -> Result<Self, FromSlimReaderError> {
         let result = Vec::from_reader(reader)?;
         result
             .try_into()
-            .map_err(|_| anyhow!("Missing elements from array"))
+            .map_err(|_| FromSlimReaderError::Other("Missing elements from array".into()))
     }
 }
 
@@ -36,7 +44,7 @@ impl<T> FromSlimReader for Vec<T>
 where
     T: FromSlimReader,
 {
-    fn from_reader(reader: &mut impl BufRead) -> Result<Self> {
+    fn from_reader(reader: &mut impl BufRead) -> Result<Self, FromSlimReaderError> {
         let _ = read_len(reader)?; // TODO: Validate this len against the read bytes
         let mut result = Vec::new();
         reader.read_expected_byte(b'[')?;
@@ -51,12 +59,12 @@ where
 }
 
 impl FromSlimReader for InstructionResult {
-    fn from_reader(reader: &mut impl BufRead) -> Result<Self> {
+    fn from_reader(reader: &mut impl BufRead) -> Result<Self, FromSlimReaderError> {
         let [id, value] = <[String; 2]>::from_reader(reader)?;
-        let id = Id::from_string(id)?;
+        let id = Id::from(id);
         Ok(match value.as_str() {
             "OK" => InstructionResult::Ok { id },
-            "null" => InstructionResult::Null { id },
+            "/__VOID__/" => InstructionResult::Void { id },
             other => {
                 if let Some(message) = other.strip_prefix("__EXCEPTION__:") {
                     InstructionResult::Exception {
@@ -72,22 +80,35 @@ impl FromSlimReader for InstructionResult {
 }
 
 impl FromSlimReader for Instruction {
-    fn from_reader(reader: &mut impl BufRead) -> Result<Self>
+    fn from_reader(reader: &mut impl BufRead) -> Result<Self, FromSlimReaderError>
     where
         Self: Sized,
     {
         let mut data: Vec<String> = Vec::from_reader(reader)?;
         data.reverse();
 
-        let id = Id::from_string(data.pop().ok_or(anyhow!("Expected data"))?)?;
-        match data.pop().ok_or(anyhow!("Expectd instruction"))?.as_str() {
+        let id = Id::from(
+            data.pop()
+                .ok_or(FromSlimReaderError::Other("Expected data".into()))?,
+        );
+        match data
+            .pop()
+            .ok_or(FromSlimReaderError::Other("Expectd instruction".into()))?
+            .as_str()
+        {
             "import" => {
-                let path = data.pop().ok_or(anyhow!("Expected path"))?;
+                let path = data
+                    .pop()
+                    .ok_or(FromSlimReaderError::Other("Expected path".into()))?;
                 Ok(Instruction::Import { id, path })
             }
             "make" => {
-                let instance = data.pop().ok_or(anyhow!("Expected instance"))?;
-                let class = data.pop().ok_or(anyhow!("Expected class"))?;
+                let instance = data
+                    .pop()
+                    .ok_or(FromSlimReaderError::Other("Expected instance".into()))?;
+                let class = data
+                    .pop()
+                    .ok_or(FromSlimReaderError::Other("Expected class".into()))?;
                 data.reverse();
                 Ok(Instruction::Make {
                     id,
@@ -97,8 +118,12 @@ impl FromSlimReader for Instruction {
                 })
             }
             "call" => {
-                let instance = data.pop().ok_or(anyhow!("Expected instance"))?;
-                let function = data.pop().ok_or(anyhow!("Expected function"))?;
+                let instance = data
+                    .pop()
+                    .ok_or(FromSlimReaderError::Other("Expected instance".into()))?;
+                let function = data
+                    .pop()
+                    .ok_or(FromSlimReaderError::Other("Expected function".into()))?;
                 data.reverse();
                 Ok(Instruction::Call {
                     id,
@@ -113,7 +138,7 @@ impl FromSlimReader for Instruction {
 }
 
 impl FromSlimReader for ByeOrSlimInstructions {
-    fn from_reader(reader: &mut impl BufRead) -> Result<Self>
+    fn from_reader(reader: &mut impl BufRead) -> Result<Self, FromSlimReaderError>
     where
         Self: Sized,
     {
@@ -134,19 +159,26 @@ impl FromSlimReader for ByeOrSlimInstructions {
                 reader.read_expected_byte(b'e')?;
                 Ok(ByeOrSlimInstructions::Bye)
             }
-            other => bail!("Non expected byte {other}"),
+            other => {
+                return Err(FromSlimReaderError::Other(
+                    format!("Non expected byte {other}"),
+                ))
+            }
         }
     }
 }
 
 trait ReadByte {
-    fn read_byte(&mut self) -> Result<u8>;
-    fn read_expected_byte(&mut self, expected_byte: u8) -> Result<()> {
+    fn read_byte(&mut self) -> Result<u8, std::io::Error>;
+    fn read_expected_byte(&mut self, expected_byte: u8) -> Result<(), std::io::Error> {
         let byte = self.read_byte()?;
         if byte == expected_byte {
             Ok(())
         } else {
-            bail!("Expected {expected_byte} but got {byte}")
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Expected {expected_byte} but got {byte}",
+            ));
         }
     }
 }
@@ -155,32 +187,41 @@ impl<R> ReadByte for R
 where
     R: BufRead,
 {
-    fn read_byte(&mut self) -> Result<u8> {
+    fn read_byte(&mut self) -> Result<u8, std::io::Error> {
         let mut buf = [0; 1];
         self.read_exact(&mut buf)?;
         Ok(buf[0])
     }
 }
 
-fn read_len(reader: &mut impl BufRead) -> Result<usize> {
+fn read_len(reader: &mut impl BufRead) -> Result<usize, std::io::Error> {
     let mut buffer = Vec::new();
     buffer.reserve_exact(6);
     reader.read_until(b':', &mut buffer)?;
     if buffer.len() < 6 {
-        bail!("Failure reading from Slim Server");
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "Failure reading from Slim Server",
+        ));
     }
-    Ok(String::from_utf8_lossy(&buffer[..buffer.len() - 1]).parse()?)
+    Ok(String::from_utf8_lossy(&buffer[..buffer.len() - 1])
+        .parse()
+        .map_err(|_| {
+            std::io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Failure converting read data to a number",
+            )
+        })?)
 }
 
 #[cfg(test)]
 mod test {
+    use super::*;
+    use std::error::Error;
     use std::io::Cursor;
 
-    use super::*;
-    use anyhow::Result;
-
     #[test]
-    fn read_empty_string() -> Result<()> {
+    fn read_empty_string() -> Result<(), Box<dyn Error>> {
         assert_eq!(
             String::new(),
             String::from_reader(&mut Cursor::new("000000:"))?
@@ -189,7 +230,7 @@ mod test {
     }
 
     #[test]
-    fn read_string() -> Result<()> {
+    fn read_string() -> Result<(), Box<dyn Error>> {
         assert_eq!(
             String::from("Hello world"),
             String::from_reader(&mut Cursor::new("000011:Hello world"))?
@@ -198,7 +239,7 @@ mod test {
     }
 
     #[test]
-    fn read_empty_vec() -> Result<()> {
+    fn read_empty_vec() -> Result<(), Box<dyn Error>> {
         assert_eq!(
             Vec::<String>::new(),
             Vec::<String>::from_reader(&mut Cursor::new("000009:[000000:]"))?
@@ -207,7 +248,7 @@ mod test {
     }
 
     #[test]
-    fn read_vec() -> Result<()> {
+    fn read_vec() -> Result<(), Box<dyn Error>> {
         assert_eq!(
             vec!["Element1".to_string(), "Element2".into()],
             Vec::<String>::from_reader(&mut Cursor::new(
@@ -218,8 +259,8 @@ mod test {
     }
 
     #[test]
-    fn read_instruction_result() -> Result<()> {
-        let id = Id::from_string("01HFM0NQM3ZS6BBX0ZH6VA6DJX".into()).unwrap();
+    fn read_instruction_result() -> Result<(), Box<dyn Error>> {
+        let id = Id::from("01HFM0NQM3ZS6BBX0ZH6VA6DJX");
         assert_eq!(
             InstructionResult::Ok { id: id.clone() },
             InstructionResult::from_reader(&mut Cursor::new(
@@ -227,7 +268,16 @@ mod test {
             ))?
         );
         assert_eq!(
-            InstructionResult::Null { id: id.clone() },
+            InstructionResult::Void { id: id.clone() },
+            InstructionResult::from_reader(&mut Cursor::new(
+                "000061:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000010:/__VOID__/:]"
+            ))?
+        );
+        assert_eq!(
+            InstructionResult::String {
+                id: id.clone(),
+                value: "null".to_string()
+            },
             InstructionResult::from_reader(&mut Cursor::new(
                 "000055:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000004:null:]"
             ))?
@@ -261,7 +311,7 @@ mod test {
             exception
         );
         let InstructionResult::Exception { id: _, message } = exception else {
-            bail!("Expected exception")
+            return Err("Expected exception".into());
         };
         assert_eq!("Message", message.pretty_message()?);
         Ok(())

@@ -110,7 +110,7 @@ impl ToSlimString for InstructionResult {
     fn to_slim_string(&self) -> SlimString {
         match self {
             InstructionResult::Ok { id } => [id.0.as_str(), "OK"].to_slim_string(),
-            InstructionResult::Null { id } => [id.0.as_str(), "null"].to_slim_string(),
+            InstructionResult::Void { id } => [id.0.as_str(), "/__VOID__/"].to_slim_string(),
             InstructionResult::String { id, value } => {
                 [id.0.as_str(), value.as_str()].to_slim_string()
             }
@@ -185,7 +185,7 @@ mod test {
 
     #[test]
     fn test_instructions() {
-        let id = Id::from_string("01HFM0NQM3ZS6BBX0ZH6VA6DJX".into()).unwrap();
+        let id = Id::from("01HFM0NQM3ZS6BBX0ZH6VA6DJX");
         assert_eq!(
             SlimString("000865:[000008:000074:[000003:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000006:import:000009:some_path:]:000084:[000004:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000004:make:000008:instance:000005:Class:]:000108:[000006:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000004:make:000008:instance:000005:Class:000004:Arg1:000004:Arg2:]:000087:[000004:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000004:call:000008:instance:000008:function:]:000111:[000006:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000004:call:000008:instance:000008:function:000004:Arg1:000004:Arg2:]:000084:[000004:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000006:assign:000006:Symbol:000005:value:]:000110:[000005:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000013:callAndAssign:000006:symbol:000008:instance:000008:function:]:000134:[000007:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000013:callAndAssign:000006:symbol:000008:instance:000008:function:000004:Arg1:000004:Arg2:]:]".into()),
             [

@@ -23,7 +23,7 @@ pub fn validate_result(
                 method_name,
                 position,
             } => match result {
-                InstructionResult::Null { id } => {
+                InstructionResult::Void { id } => {
                     if id != expected_id {
                         failures.push((
                             format!(
@@ -90,7 +90,7 @@ pub fn validate_result(
                 id: expected_id,
                 position,
             } => match result {
-                InstructionResult::Null { id } => {
+                InstructionResult::Void { id } => {
                     if id != expected_id {
                         failures.push((
                             format!(
@@ -156,7 +156,7 @@ pub fn validate_result(
                 method_name,
                 position,
             } => match result {
-                InstructionResult::Null { id } => {
+                InstructionResult::Void { id } => {
                     if id != expected_id {
                         failures.push((
                             format!(
@@ -220,7 +220,7 @@ pub fn validate_result(
                 }
             },
             ExpectedResult::Any { id: expected_id } => match result {
-                InstructionResult::Null { id }
+                InstructionResult::Void { id }
                 | InstructionResult::Ok { id }
                 | InstructionResult::Exception { id, message: _ }
                 | InstructionResult::String { id, value: _ } => {
@@ -297,13 +297,13 @@ mod test {
                 (ExpectedResult::Any { id: id.clone() }, Snooze::not_snooze()),
             ],
             vec![
-                InstructionResult::Null { id: id.clone() },
+                InstructionResult::Void { id: id.clone() },
                 InstructionResult::Ok { id: id.clone() },
                 InstructionResult::String {
                     id: id.clone(),
                     value: "Value".into(),
                 },
-                InstructionResult::Null { id: id.clone() },
+                InstructionResult::Void { id: id.clone() },
                 InstructionResult::Ok { id: id.clone() },
                 InstructionResult::String {
                     id: id.clone(),
@@ -411,19 +411,19 @@ mod test {
                 ),
             ],
             vec![
-                InstructionResult::Null { id: id_2.clone() },
+                InstructionResult::Void { id: id_2.clone() },
                 InstructionResult::Ok { id: id_1.clone() },
                 InstructionResult::String {
                     id: id_1.clone(),
                     value: "Value".into(),
                 },
-                InstructionResult::Null { id: id_1.clone() },
+                InstructionResult::Void { id: id_1.clone() },
                 InstructionResult::Ok { id: id_2.clone() },
                 InstructionResult::String {
                     id: id_1.clone(),
                     value: "Value".into(),
                 },
-                InstructionResult::Null { id: id_1.clone() },
+                InstructionResult::Void { id: id_1.clone() },
                 InstructionResult::Ok { id: id_1.clone() },
                 InstructionResult::String {
                     id: id_2.clone(),
@@ -433,7 +433,7 @@ mod test {
                     id: id_1.clone(),
                     value: "WrongValue".into(),
                 },
-                InstructionResult::Null { id: id_2.clone() },
+                InstructionResult::Void { id: id_2.clone() },
             ],
         )?;
         assert_eq!(

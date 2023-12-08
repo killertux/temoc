@@ -1,6 +1,6 @@
-execute_server_command = "cargo test --test slim_server 8426"
+execute_server_command = "cargo run --example calculator"
 port = 8426
-test_dir = "example/"
+test_dir = "temoc/examples/"
 recursive = true
 show_snoozed = true
 verbose = false
