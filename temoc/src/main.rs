@@ -3,11 +3,9 @@ use clap::Parser;
 use processor::process_markdown;
 use std::{
     fs::{metadata, read_dir, read_to_string},
-    io::{Read, Write},
     net::TcpStream,
     path::{Path, PathBuf},
     process::{exit, Command, Stdio},
-    thread::sleep,
     time::{Duration, Instant},
 };
 use toml::Table;
@@ -44,57 +42,39 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = append_config_to_args(Args::parse())?;
-    let mut slim_server = None;
-
-    if let Some(command) = &args.execute_server_command {
-        let stdout = build_stdio(&args);
-        let stderr = build_stdio(&args);
-        slim_server = Some(
-            Command::new("sh")
-                .arg("-c")
-                .arg(command)
-                .stdout(stdout)
-                .stderr(stderr)
-                .spawn()?,
-        );
-    }
-
-    let tcp_stream = connect_to_slim_server(args.port.unwrap_or(1), Duration::from_secs(10))?;
-    let mut connection = SlimConnection::new(tcp_stream.try_clone()?, tcp_stream)?;
+    let Some(command) = args.execute_server_command else {
+        bail!("You need to provide a command to start the slim server")
+    };
 
     let fail = process_files(
-        &mut connection,
+        &command,
         args.recursive,
         args.show_snoozed,
+        args.verbose,
+        args.port.unwrap_or(1),
         args.files,
     )?;
-    connection.close()?;
     if fail {
         exit(1)
-    }
-
-    if let Some(mut server) = slim_server {
-        if let Ok(None) = server.try_wait() {
-            sleep(Duration::from_millis(500));
-            server.kill()?;
-        }
     }
 
     Ok(())
 }
 
-fn build_stdio(args: &Args) -> Stdio {
-    if args.verbose {
+fn build_stdio(verbose: bool) -> Stdio {
+    if verbose {
         Stdio::inherit()
     } else {
         Stdio::null()
     }
 }
 
-fn process_files<R: Read, W: Write>(
-    connection: &mut SlimConnection<R, W>,
+fn process_files(
+    command: &str,
     recursive: bool,
     show_snoozed: bool,
+    verbose: bool,
+    port: u16,
     files: Vec<PathBuf>,
 ) -> Result<bool> {
     let mut fail = false;
@@ -102,9 +82,11 @@ fn process_files<R: Read, W: Write>(
         let metadata = metadata(&file)?;
         if metadata.is_dir() && recursive {
             fail |= process_files(
-                connection,
+                command,
                 recursive,
                 show_snoozed,
+                verbose,
+                port,
                 get_list_of_files(file)?,
             )?;
             continue;
@@ -115,7 +97,19 @@ fn process_files<R: Read, W: Write>(
                 .map(|ext| ext.to_ascii_lowercase() == "md")
                 .unwrap_or(false)
         {
-            fail |= process_markdown(connection, show_snoozed, &file)?;
+            let stdout = build_stdio(verbose);
+            let stderr = build_stdio(verbose);
+            let mut slim_server = Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .stdout(stdout)
+                .stderr(stderr)
+                .spawn()?;
+            let tcp_stream = connect_to_slim_server(port, Duration::from_secs(10))?;
+            let mut connection = SlimConnection::new(tcp_stream.try_clone()?, tcp_stream)?;
+            fail |= process_markdown(&mut connection, show_snoozed, &file)?;
+            connection.close()?;
+            slim_server.wait()?;
         }
     }
     Ok(fail)
@@ -191,7 +185,6 @@ fn connect_to_slim_server(port: u16, time_limit: Duration) -> Result<TcpStream> 
         if start.elapsed() > time_limit {
             bail!("Failed to connect to slim server");
         }
-        sleep(Duration::from_millis(300))
     }
 }
 

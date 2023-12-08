@@ -160,9 +160,9 @@ impl FromSlimReader for ByeOrSlimInstructions {
                 Ok(ByeOrSlimInstructions::Bye)
             }
             other => {
-                return Err(FromSlimReaderError::Other(
-                    format!("Non expected byte {other}"),
-                ))
+                return Err(FromSlimReaderError::Other(format!(
+                    "Non expected byte {other}"
+                )))
             }
         }
     }
