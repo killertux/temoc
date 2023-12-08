@@ -1,11 +1,11 @@
 [package]
 name = "rust_slim"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A Slim Server for acceptance tests in rust"
 repository = "https://github.com/killertux/temoc/tree/master/rust_slim"
-keywords = ["acceptance", "testing", "test", "slim", "temoc", "fitnesse"]
+keywords = ["acceptance", "testing", "slim", "temoc", "fitnesse"]
 categories = ["development-tools::testing"]
 readme = "readme.md"
 
