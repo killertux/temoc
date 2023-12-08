@@ -19,7 +19,7 @@ We use the [Slim Protocol](https://fitnesse.org/FitNesse/UserGuide/WritingAccept
 
 You will use one of these plugins to write the test fixtures in your project. Fixtures are glue code that serves as intermediary between Temoc and your software.
 
-After this is done, you can write your accepatance tests markdown. Take a look at our calculator example [Here](https://github.com/killertux/temoc/tree/master/temoc/examples). See the raw markdown files because there are hidden isntructions.
+After this is done, you can write your accepatance tests markdown. Take a look at our calculator example [Here](https://github.com/killertux/temoc/tree/master/temoc/examples). See the raw markdown files because there are hidden instructions. To run it, you can run `cargo run -- -c Config.toml.example`.
 
 ## Building Temoc
 
