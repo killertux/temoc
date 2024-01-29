@@ -1,11 +1,14 @@
-use self::markdown_commands::{get_commands_from_markdown, Snooze};
+use self::{
+    markdown_commands::{get_commands_from_markdown, Snooze},
+    slim_instructions_from_commands::ExpectedResulWithSnooze,
+};
 use crate::processor::{
     slim_instructions_from_commands::get_instructions_from_commands,
     validate_result::validate_result,
 };
 use anyhow::{anyhow, Result};
 use markdown::mdast::Node;
-use slim_protocol::SlimConnection;
+use slim_protocol::{Instruction, SlimConnection};
 use std::{
     fs::read_to_string,
     io::{Read, Write},
@@ -16,19 +19,26 @@ mod markdown_commands;
 mod slim_instructions_from_commands;
 mod validate_result;
 
-pub fn process_markdown<R: Read, W: Write>(
-    connection: &mut SlimConnection<R, W>,
-    show_snoozed: bool,
+pub fn process_markdown_into_instructions(
     file_path: impl AsRef<Path>,
-) -> Result<bool> {
+) -> Result<(Vec<Instruction>, Vec<ExpectedResulWithSnooze>)> {
     let file_path = file_path.as_ref();
     let file_path_display = file_path.display();
     print!("Testing file {}...", file_path_display);
     let markdown = parse_markdown(file_path)?;
     let commands = get_commands_from_markdown(markdown)?;
-    let (instructions, expected_result) = get_instructions_from_commands(commands)?;
+    get_instructions_from_commands(commands)
+}
+
+pub fn execute_instructions_and_print_result<R: Read, W: Write>(
+    connection: &mut SlimConnection<R, W>,
+    file_path: &str,
+    instructions: Vec<Instruction>,
+    expected_result: Vec<ExpectedResulWithSnooze>,
+    show_snoozed: bool,
+) -> Result<bool> {
     let result = connection.send_instructions(&instructions)?;
-    let failures = validate_result(file_path_display, expected_result, result)?;
+    let failures = validate_result(file_path, expected_result, result)?;
     print_fail_or_ok(show_snoozed, failures)
 }
 
