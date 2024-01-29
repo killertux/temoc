@@ -98,27 +98,28 @@ fn process_files(
                 .unwrap_or(false)
         {
             let (instructions, expected_result) = process_markdown_into_instructions(&file)?;
-            if instructions.len() > 0 {
-                let stdout = build_stdio(verbose);
-                let stderr = build_stdio(verbose);
-                let mut slim_server = Command::new("sh")
-                    .arg("-c")
-                    .arg(command)
-                    .stdout(stdout)
-                    .stderr(stderr)
-                    .spawn()?;
-                let tcp_stream = connect_to_slim_server(port, Duration::from_secs(10))?;
-                let mut connection = SlimConnection::new(tcp_stream.try_clone()?, tcp_stream)?;
-                fail |= execute_instructions_and_print_result(
-                    &mut connection,
-                    &file.to_string_lossy(),
-                    instructions,
-                    expected_result,
-                    show_snoozed,
-                )?;
-                connection.close()?;
-                slim_server.wait()?;
+            if instructions.is_empty() {
+                continue;
             }
+            let stdout = build_stdio(verbose);
+            let stderr = build_stdio(verbose);
+            let mut slim_server = Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .stdout(stdout)
+                .stderr(stderr)
+                .spawn()?;
+            let tcp_stream = connect_to_slim_server(port, Duration::from_secs(10))?;
+            let mut connection = SlimConnection::new(tcp_stream.try_clone()?, tcp_stream)?;
+            fail |= execute_instructions_and_print_result(
+                &mut connection,
+                &file.to_string_lossy(),
+                instructions,
+                expected_result,
+                show_snoozed,
+            )?;
+            connection.close()?;
+            slim_server.wait()?;
         }
     }
     Ok(fail)
