@@ -18,7 +18,7 @@ pub fn validate_result(
     }
     for (result, (expected_result, snooze)) in result.into_iter().zip(expected_result.into_iter()) {
         match expected_result {
-            ExpectedResult::Null {
+            ExpectedResult::NullOrVoid {
                 id: expected_id,
                 method_name,
                 position,
@@ -62,13 +62,16 @@ pub fn validate_result(
                         ));
                         continue;
                     }
-                    failures.push((
-                        format!(
-                        "Expected NULL, got `{value}` in {file_path}:{position} for method call {}",
-                        method_name.0
-                    ),
-                        snooze.clone(),
-                    ));
+                    if value.to_lowercase() != "null" {
+                        failures.push((
+                            format!(
+                            "Expected NULL, got `{value}` in {file_path}:{position} for method call {}",
+                            method_name.0
+                        ),
+                            snooze.clone(),
+                        ));
+                    }
+                    continue;
                 }
                 InstructionResult::Exception { id, message } => {
                     if id != expected_id {
@@ -269,7 +272,15 @@ mod test {
             "test_path.md",
             vec![
                 (
-                    ExpectedResult::Null {
+                    ExpectedResult::NullOrVoid {
+                        id: id.clone(),
+                        method_name: method_name.clone(),
+                        position: position.clone(),
+                    },
+                    Snooze::not_snooze(),
+                ),
+                (
+                    ExpectedResult::NullOrVoid {
                         id: id.clone(),
                         method_name: method_name.clone(),
                         position: position.clone(),
@@ -298,6 +309,10 @@ mod test {
             ],
             vec![
                 InstructionResult::Void { id: id.clone() },
+                InstructionResult::String {
+                    id: id.clone(),
+                    value: "NULL".into(),
+                },
                 InstructionResult::Ok { id: id.clone() },
                 InstructionResult::String {
                     id: id.clone(),
@@ -325,7 +340,7 @@ mod test {
             "test_file.md",
             vec![
                 (
-                    ExpectedResult::Null {
+                    ExpectedResult::NullOrVoid {
                         id: id_1.clone(),
                         method_name: method_name.clone(),
                         position: position.clone(),
@@ -333,7 +348,7 @@ mod test {
                     Snooze::not_snooze(),
                 ),
                 (
-                    ExpectedResult::Null {
+                    ExpectedResult::NullOrVoid {
                         id: id_1.clone(),
                         method_name: method_name.clone(),
                         position: position.clone(),
@@ -341,7 +356,7 @@ mod test {
                     Snooze::not_snooze(),
                 ),
                 (
-                    ExpectedResult::Null {
+                    ExpectedResult::NullOrVoid {
                         id: id_1.clone(),
                         method_name: method_name.clone(),
                         position: position.clone(),

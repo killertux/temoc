@@ -62,7 +62,7 @@ pub fn get_instructions_from_commands(
                             args: vec![value],
                         });
                         expected_result.push((
-                            ExpectedResult::Null {
+                            ExpectedResult::NullOrVoid {
                                 id,
                                 method_name: setter_name,
                                 position,
@@ -117,7 +117,7 @@ pub enum ExpectedResult {
         id: Id,
         position: Position,
     },
-    Null {
+    NullOrVoid {
         id: Id,
         method_name: MethodName,
         position: Position,
@@ -269,7 +269,7 @@ mod test {
         ));
         assert!(matches!(
             expected_result.remove(0),
-            (ExpectedResult::Null { id:_, method_name, position:_ }, _) if method_name.0 == "setA"
+            (ExpectedResult::NullOrVoid { id:_, method_name, position:_ }, _) if method_name.0 == "setA"
         ));
         assert!(matches!(
             &instructions.remove(0),
@@ -282,7 +282,7 @@ mod test {
         ));
         assert!(matches!(
             &expected_result.remove(0),
-            (ExpectedResult::Null { id:_, method_name, position:_ }, _) if method_name.0 == "setB"
+            (ExpectedResult::NullOrVoid { id:_, method_name, position:_ }, _) if method_name.0 == "setB"
         ));
         assert!(matches!(
             instructions.remove(0),
@@ -357,7 +357,7 @@ mod test {
         ));
         assert!(matches!(
             &expected_result.remove(0),
-            (ExpectedResult::Null { id:_, method_name, position:_ }, _) if method_name.0 == "setA"
+            (ExpectedResult::NullOrVoid { id:_, method_name, position:_ }, _) if method_name.0 == "setA"
         ));
         assert!(matches!(
             &instructions.remove(0),
@@ -370,7 +370,7 @@ mod test {
         ));
         assert!(matches!(
             &expected_result.remove(0),
-            (ExpectedResult::Null { id:_, method_name, position:_ }, _) if method_name.0 == "setB"
+            (ExpectedResult::NullOrVoid { id:_, method_name, position:_ }, _) if method_name.0 == "setB"
         ));
         assert!(matches!(
             instructions.remove(0),
@@ -508,7 +508,7 @@ mod test {
         ));
         assert!(matches!(
             expected_result.remove(0),
-            (ExpectedResult::Null { id:_, method_name, position:_ }, snooze) if method_name.0 == "setA" && snooze.should_snooze()
+            (ExpectedResult::NullOrVoid { id:_, method_name, position:_ }, snooze) if method_name.0 == "setA" && snooze.should_snooze()
         ));
         assert!(matches!(
             instructions.remove(0),
