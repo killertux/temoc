@@ -1,17 +1,10 @@
+use crate::app::{get_list_of_files, App};
 use anyhow::{anyhow, bail, Result};
 use clap::Parser;
-use processor::{execute_instructions_and_print_result, process_markdown_into_instructions};
-use std::{
-    fs::{metadata, read_dir, read_to_string},
-    net::TcpStream,
-    path::{Path, PathBuf},
-    process::{exit, Command, Stdio},
-    time::{Duration, Instant},
-};
+use std::{fs::read_to_string, path::PathBuf, process::exit};
 use toml::Table;
 
-use slim_protocol::SlimConnection;
-
+mod app;
 mod processor;
 
 /// Test markdown files using a slim server
@@ -46,84 +39,20 @@ fn main() -> Result<()> {
         bail!("You need to provide a command to start the slim server")
     };
 
-    let fail = process_files(
-        &command,
-        args.recursive,
+    if App::new(
+        command,
         args.show_snoozed,
         args.verbose,
         args.port.unwrap_or(1),
+        args.recursive,
         args.files,
-    )?;
-    if fail {
+    )
+    .run()
+    {
         exit(1)
     }
 
     Ok(())
-}
-
-fn build_stdio(verbose: bool) -> Stdio {
-    if verbose {
-        Stdio::inherit()
-    } else {
-        Stdio::null()
-    }
-}
-
-fn process_files(
-    command: &str,
-    recursive: bool,
-    show_snoozed: bool,
-    verbose: bool,
-    port: u16,
-    files: Vec<PathBuf>,
-) -> Result<bool> {
-    let mut fail = false;
-    for file in files {
-        let metadata = metadata(&file)?;
-        if metadata.is_dir() && recursive {
-            fail |= process_files(
-                command,
-                recursive,
-                show_snoozed,
-                verbose,
-                port,
-                get_list_of_files(file)?,
-            )?;
-            continue;
-        }
-        if metadata.is_file()
-            && file
-                .extension()
-                .map(|ext| ext.to_ascii_lowercase() == "md")
-                .unwrap_or(false)
-        {
-            let (instructions, expected_result) = process_markdown_into_instructions(&file)?;
-            if instructions.is_empty() {
-                println!("NONE");
-                continue;
-            }
-            let stdout = build_stdio(verbose);
-            let stderr = build_stdio(verbose);
-            let mut slim_server = Command::new("sh")
-                .arg("-c")
-                .arg(command)
-                .stdout(stdout)
-                .stderr(stderr)
-                .spawn()?;
-            let tcp_stream = connect_to_slim_server(port, Duration::from_secs(10))?;
-            let mut connection = SlimConnection::new(tcp_stream.try_clone()?, tcp_stream)?;
-            fail |= execute_instructions_and_print_result(
-                &mut connection,
-                &file.to_string_lossy(),
-                instructions,
-                expected_result,
-                show_snoozed,
-            )?;
-            connection.close()?;
-            slim_server.wait()?;
-        }
-    }
-    Ok(fail)
 }
 
 fn append_config_to_args(mut args: Args) -> Result<Args> {
@@ -185,22 +114,4 @@ fn append_config_to_args(mut args: Args) -> Result<Args> {
             Ok(args)
         }
     }
-}
-
-fn connect_to_slim_server(port: u16, time_limit: Duration) -> Result<TcpStream> {
-    let start = Instant::now();
-    loop {
-        if let Ok(tcp_stream) = TcpStream::connect(format!("127.0.0.1:{}", port)) {
-            return Ok(tcp_stream);
-        }
-        if start.elapsed() > time_limit {
-            bail!("Failed to connect to slim server");
-        }
-    }
-}
-
-fn get_list_of_files(dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
-    Ok(read_dir(dir.as_ref())?
-        .map(|file| file.map(|file| file.path().to_path_buf()))
-        .collect::<Result<Vec<PathBuf>, std::io::Error>>()?)
 }
