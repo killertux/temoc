@@ -99,6 +99,7 @@ fn process_files(
         {
             let (instructions, expected_result) = process_markdown_into_instructions(&file)?;
             if instructions.is_empty() {
+                println!("NONE");
                 continue;
             }
             let stdout = build_stdio(verbose);
