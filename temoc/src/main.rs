@@ -14,9 +14,12 @@ struct Args {
     /// Configuration file
     #[arg(short, long)]
     configuration_file: Option<PathBuf>,
-    /// Port to connect to the slim server
+    /// Base port to connect to the slim server. Default is 8085
     #[arg(short, long)]
     port: Option<u16>,
+    /// The size of the pool of ports to cycle through. Default is 10 (8085 - 8095)
+    #[arg(short = 'l', long)]
+    pool_size: Option<u8>,
     /// Command to start the slim server
     #[arg(short = 'x', long)]
     execute_server_command: Option<String>,
@@ -26,9 +29,9 @@ struct Args {
     /// Show snoozed errors
     #[arg(short, long)]
     show_snoozed: bool,
-    /// Show STDERR and STDOUT of the slim server
-    #[arg(short, long)]
-    verbose: bool,
+    /// Pipe STDERR and STDOUT of the slim server through the STDOUT
+    #[arg(short = 'o', long)]
+    pipe_output: bool,
     /// List of files to test
     files: Vec<PathBuf>,
 }
@@ -42,12 +45,13 @@ fn main() -> Result<()> {
     if App::new(
         command,
         args.show_snoozed,
-        args.verbose,
-        args.port.unwrap_or(1),
+        args.pipe_output,
+        args.port.unwrap_or(8085),
+        args.pool_size.unwrap_or(10),
         args.recursive,
         args.files,
     )
-    .run()
+    .run()?
     {
         exit(1)
     }
@@ -63,6 +67,9 @@ fn append_config_to_args(mut args: Args) -> Result<Args> {
             args.port = args.port.or(config_file
                 .get("port")
                 .map(|port| port.as_integer().expect("Expect the port to be a number") as u16));
+            args.pool_size = args.pool_size.or(config_file
+                .get("pool_size")
+                .map(|port| port.as_integer().expect("Expect the port to be a number") as u8));
             args.recursive = args.recursive
                 || config_file
                     .get("recursive")
@@ -81,9 +88,9 @@ fn append_config_to_args(mut args: Args) -> Result<Args> {
                             .expect("Expect the show_snoozed to be a boolean")
                     })
                     .unwrap_or_default();
-            args.verbose = args.verbose
+            args.pipe_output = args.pipe_output
                 || config_file
-                    .get("verbose")
+                    .get("pipe_output")
                     .map(|verbose| {
                         verbose
                             .as_bool()

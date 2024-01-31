@@ -1,6 +1,14 @@
-execute_server_command = "cargo run --example calculator"
-port = 8426
+# Command to execute the server. %p will be replaced by the port for the connection
+execute_server_command = "cargo run --example calculator %p"
+# Base port that will be used to start the connection pool
+port = 8085
+# The size of the pool of ports to cycle through
+pool_size = 10
+# Dir with markdown files to be tested
 test_dir = "temoc/examples/"
+# If we should traverse the test dir recursively
 recursive = true
+# Show snoozed errors
 show_snoozed = true
-verbose = false
+# Pipe STDOUT and STDERR of the slim server through the STDOUT of the application
+pipe_output = false

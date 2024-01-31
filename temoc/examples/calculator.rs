@@ -1,6 +1,7 @@
 use anyhow::Result;
 use fixtures::CalculatorFixture;
 use rust_slim::SlimServer;
+use std::env::args;
 use std::net::TcpListener;
 
 mod fixtures {
@@ -41,7 +42,8 @@ mod fixtures {
 }
 
 fn main() -> Result<()> {
-    let listener = TcpListener::bind(format!("0.0.0.0:8426").to_string())?;
+    let port = args().skip(1).next().unwrap_or("8085".to_string());
+    let listener = TcpListener::bind(format!("0.0.0.0:{port}").to_string())?;
     let (stream, _) = listener.accept()?;
     let mut server = SlimServer::new(stream.try_clone()?, stream);
     server.add_fixture::<CalculatorFixture>();

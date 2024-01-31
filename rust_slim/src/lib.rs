@@ -54,6 +54,7 @@
 //! use rust_slim::SlimServer;
 //! use std::net::TcpListener;
 //! use anyhow::Result;
+//! use std::env::args;
 //! # use std::net::TcpStream;
 //! # use std::thread::spawn;
 //! # use std::io::Write;
@@ -95,13 +96,14 @@
 //! fn main() -> Result<()> {
 //! #   spawn(|| {
 //! #        loop {
-//! #            if let Ok(mut stream) = TcpStream::connect("127.0.0.1:8426") {
+//! #            if let Ok(mut stream) = TcpStream::connect("127.0.0.1:8085") {
 //! #                stream.write_all(b"000003:bye").unwrap();
 //! #                break;
 //! #            }
 //! #        }  
 //! #    });
-//!     let listener = TcpListener::bind(format!("0.0.0.0:8426").to_string()).expect("Error");
+//!     let port = args().skip(1).next().unwrap_or("8085".to_string());
+//!     let listener = TcpListener::bind(format!("0.0.0.0:{port}").to_string()).expect("Error");
 //!     let (stream, _) = listener.accept()?;
 //!     let mut server = SlimServer::new(stream.try_clone()?, stream);
 //!     server.add_fixture::<Calculator>();
