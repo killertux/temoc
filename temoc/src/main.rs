@@ -1,7 +1,7 @@
 use crate::app::{get_list_of_files, App};
 use anyhow::{anyhow, bail, Result};
 use clap::Parser;
-use std::{fs::read_to_string, path::PathBuf, process::exit};
+use std::{fs::read_to_string, path::PathBuf};
 use toml::Table;
 
 mod app;
@@ -53,7 +53,7 @@ fn main() -> Result<()> {
     )
     .run()?
     {
-        exit(1)
+        bail!("Tests executed with error");
     }
 
     Ok(())

@@ -61,7 +61,7 @@ impl App {
         if metadata.is_file() && Self::is_markdown_format(&path) {
             return self.process_file(&path);
         }
-        Ok(true)
+        Ok(false)
     }
 
     fn is_markdown_format(path: impl AsRef<Path>) -> bool {
