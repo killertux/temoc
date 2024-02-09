@@ -1,13 +1,17 @@
 use self::{
     markdown_commands::{get_commands_from_markdown, Snooze},
-    slim_instructions_from_commands::ExpectedResulWithSnooze,
+    slim_instructions_from_commands::{ExpectedResulWithSnooze, LoggerEvent},
 };
-use crate::processor::{
-    slim_instructions_from_commands::get_instructions_from_commands,
-    validate_result::validate_result,
+use crate::{
+    logger::TestLogger,
+    processor::{
+        slim_instructions_from_commands::get_instructions_from_commands,
+        validate_result::validate_result,
+    },
 };
 use anyhow::{anyhow, Result};
 use markdown::mdast::Node;
+pub use markdown_commands::Position;
 use slim_protocol::{Instruction, SlimConnection};
 use std::{
     fs::read_to_string,
@@ -21,7 +25,10 @@ mod validate_result;
 
 pub fn process_markdown_into_instructions(
     file_path: impl AsRef<Path>,
-) -> Result<(Vec<Instruction>, Vec<ExpectedResulWithSnooze>)> {
+) -> Result<(
+    Vec<(LoggerEvent, Vec<Instruction>)>,
+    Vec<Vec<ExpectedResulWithSnooze>>,
+)> {
     let file_path = file_path.as_ref();
     let file_path_display = file_path.display();
     print!("Testing file {}...", file_path_display);
@@ -33,12 +40,40 @@ pub fn process_markdown_into_instructions(
 pub fn execute_instructions_and_print_result<R: Read, W: Write>(
     connection: &mut SlimConnection<R, W>,
     file_path: &str,
-    instructions: Vec<Instruction>,
-    expected_result: Vec<ExpectedResulWithSnooze>,
+    instructions: Vec<(LoggerEvent, Vec<Instruction>)>,
+    expected_result: Vec<Vec<ExpectedResulWithSnooze>>,
     show_snoozed: bool,
+    logger: &mut Box<dyn TestLogger>,
 ) -> Result<bool> {
-    let result = connection.send_instructions(&instructions)?;
-    let failures = validate_result(file_path, expected_result, result)?;
+    let mut failures = Vec::new();
+    for ((logger_event, instructions), expected_result) in
+        instructions.into_iter().zip(expected_result.into_iter())
+    {
+        match logger_event {
+            LoggerEvent::Nop => {
+                let result = connection.send_instructions(&instructions)?;
+                failures.append(&mut validate_result(file_path, expected_result, result)?);
+            }
+            LoggerEvent::RowExecution {
+                decision_table_name,
+                row_number,
+                position,
+            } => {
+                logger.row_started(&decision_table_name, row_number, position)?;
+                let result = connection.send_instructions(&instructions)?;
+                let mut result = &mut validate_result(file_path, expected_result, result)?;
+                for (failure, snooze) in result.iter() {
+                    if snooze.should_snooze() {
+                        logger.row_snoozed(failure)?;
+                    } else {
+                        logger.row_failed(failure)?;
+                    }
+                }
+                failures.append(&mut result);
+                logger.row_finished()?;
+            }
+        }
+    }
     print_fail_or_ok(show_snoozed, failures)
 }
 

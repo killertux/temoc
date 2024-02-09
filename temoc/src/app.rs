@@ -1,3 +1,4 @@
+use crate::logger::{ TestLogger};
 use crate::processor::{execute_instructions_and_print_result, process_markdown_into_instructions};
 use anyhow::{bail, Result};
 use slim_protocol::SlimConnection;
@@ -17,6 +18,7 @@ pub struct App {
     pool_size: u8,
     recursive: bool,
     paths: Vec<PathBuf>,
+    logger: Box<dyn TestLogger>,
 }
 
 impl App {
@@ -28,6 +30,7 @@ impl App {
         pool_size: u8,
         recursive: bool,
         paths: Vec<PathBuf>,
+        logger: Box<dyn TestLogger>,
     ) -> Self {
         App {
             command,
@@ -38,6 +41,7 @@ impl App {
             pool_size,
             recursive,
             paths,
+            logger,
         }
     }
 
@@ -77,6 +81,7 @@ impl App {
             println!("NONE");
             return Ok(false);
         }
+        self.logger.file_started(&file.as_ref().to_string_lossy())?;
         let mut slim_server = self.start_slim_server()?;
         let tcp_stream = self.connect_to_slim_server(Duration::from_secs(10))?;
         let mut connection = SlimConnection::new(tcp_stream.try_clone()?, tcp_stream)?;
@@ -86,9 +91,11 @@ impl App {
             instructions,
             expected_result,
             self.show_snoozed,
+            &mut self.logger,
         )?;
         connection.close()?;
         slim_server.wait()?;
+        self.logger.file_finished()?;
         Ok(fail)
     }
 

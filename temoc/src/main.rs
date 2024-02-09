@@ -1,10 +1,12 @@
 use crate::app::{get_list_of_files, App};
 use anyhow::{anyhow, bail, Result};
 use clap::Parser;
-use std::{fs::read_to_string, path::PathBuf};
+use logger::{NullLogger, TeamCityTestLogger};
+use std::{fs::read_to_string, io::stdout, path::PathBuf};
 use toml::Table;
 
 mod app;
+mod logger;
 mod processor;
 
 /// Test markdown files using a slim server
@@ -29,6 +31,9 @@ struct Args {
     /// Show snoozed errors
     #[arg(short, long)]
     show_snoozed: bool,
+    /// Show snoozed errors
+    #[arg(short, long)]
+    teamcity: bool,
     /// Pipe STDERR and STDOUT of the slim server through the STDOUT
     #[arg(short = 'o', long)]
     pipe_output: bool,
@@ -50,6 +55,11 @@ fn main() -> Result<()> {
         args.pool_size.unwrap_or(10),
         args.recursive,
         args.files,
+        if args.teamcity {
+            Box::new(TeamCityTestLogger::new(stdout()))
+        } else {
+            Box::new(NullLogger {})
+        },
     )
     .run()?
     {

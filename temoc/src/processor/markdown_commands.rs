@@ -19,8 +19,8 @@ pub enum MarkdownCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Position {
-    line: usize,
-    column: usize,
+    pub line: usize,
+    pub column: usize,
 }
 
 impl Position {
@@ -56,6 +56,7 @@ pub struct Value(pub String, pub Position);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableRow {
+    pub position: Position,
     pub setters: Vec<(MethodName, Value)>,
     pub getters: Vec<(MethodName, Value)>,
 }
@@ -158,6 +159,7 @@ pub fn get_commands_from_markdown(markdown: Node) -> Result<Vec<MarkdownCommand>
                             continue;
                         }
                         let mut table_row = TableRow {
+                            position: row.position.ok_or(anyhow!("Expected position"))?.into(),
                             setters: Vec::new(),
                             getters: Vec::new(),
                         };
@@ -269,6 +271,7 @@ This is a calculator example
                     class: Class("Calculator".into(), Position::new(8, 1)),
                     table: vec![
                         TableRow {
+                            position: Position::new(12, 1),
                             setters: vec![
                                 (
                                     MethodName("setA".into(), Position::new(10, 3)),
@@ -285,6 +288,7 @@ This is a calculator example
                             )]
                         },
                         TableRow {
+                            position: Position::new(13, 1),
                             setters: vec![
                                 (
                                     MethodName("setA".into(), Position::new(10, 3)),
@@ -324,6 +328,7 @@ This is a calculator example
             vec![MarkdownCommand::DecisionTable {
                 class: Class("Calculator".into(), Position::new(2, 1)),
                 table: vec![TableRow {
+                    position: Position::new(6, 1),
                     setters: vec![(
                         MethodName("setA".into(), Position::new(4, 3)),
                         Value("value".into(), Position::new(6, 3))
@@ -368,6 +373,7 @@ This is a calculator example
             vec![MarkdownCommand::DecisionTable {
                 class: Class("Calculator".into(), Position::new(2, 1)),
                 table: vec![TableRow {
+                    position: Position::new(6, 1),
                     setters: vec![(
                         MethodName("setA".into(), Position::new(4, 3)),
                         Value("value".into(), Position::new(6, 3))
@@ -399,6 +405,7 @@ This is a calculator example
             vec![MarkdownCommand::DecisionTable {
                 class: Class("Calculator".into(), Position::new(2, 1)),
                 table: vec![TableRow {
+                    position: Position::new(6, 1),
                     setters: vec![(
                         MethodName("setA".into(), Position::new(4, 3)),
                         Value("value".into(), Position::new(6, 3))
