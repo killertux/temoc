@@ -1,7 +1,10 @@
 use anyhow::{anyhow, bail, Result};
 use chrono::{NaiveDate, Utc};
 use convert_case::{Case, Casing};
-use markdown::{mdast::Node, unist::Position as MPosition};
+use markdown::{
+    mdast::{Node, TableCell},
+    unist::Position as MPosition,
+};
 use std::fmt::Display;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,15 +119,11 @@ pub fn get_commands_from_markdown(markdown: Node) -> Result<Vec<MarkdownCommand>
                         };
                         if methods.is_empty() {
                             for cell in row.children {
-                                let Node::TableCell(mut cell) = cell else {
+                                let Node::TableCell(cell) = cell else {
                                     bail!("Expected a table cell")
                                 };
-                                let Node::Text(text) = cell.children.remove(0) else {
-                                    bail!("Expected a text")
-                                };
-                                let position =
-                                    text.position.ok_or(anyhow!("Expected position"))?.into();
-                                let text = text.value.trim();
+                                let (text, position) = get_text_and_position(cell)?;
+                                let text = text.trim();
                                 if text.starts_with('#') {
                                     methods.push((
                                         MethodName(text.into(), position),
@@ -162,15 +161,11 @@ pub fn get_commands_from_markdown(markdown: Node) -> Result<Vec<MarkdownCommand>
                             getters: Vec::new(),
                         };
                         for (i, cell) in row.children.into_iter().enumerate() {
-                            let Node::TableCell(mut cell) = cell else {
+                            let Node::TableCell(cell) = cell else {
                                 bail!("Expected a table cell")
                             };
-                            let Node::Text(text) = cell.children.remove(0) else {
-                                bail!("Expected a text")
-                            };
-                            let position =
-                                text.position.ok_or(anyhow!("Expected position"))?.into();
-                            let text = text.value.trim();
+                            let (text, position) = get_text_and_position(cell)?;
+                            let text = text.trim();
                             match methods.get(i) {
                                 None => bail!("Wrong number of columns in row"),
                                 Some((method_name, MethodType::Getter)) => table_row
@@ -235,6 +230,39 @@ pub fn get_commands_from_markdown(markdown: Node) -> Result<Vec<MarkdownCommand>
         _ => bail!("Expected root markdown document"),
     }
     Ok(result)
+}
+
+fn get_text_and_position(cell: TableCell) -> Result<(String, Position)> {
+    let position = cell.position.ok_or(anyhow!("Expected position"))?.into();
+    if cell.children.is_empty() {
+        return Ok((String::new(), position));
+    }
+    let position = (cell.children[0]
+        .position()
+        .ok_or(anyhow!("Expected position"))?)
+    .clone()
+    .into();
+    Ok((children_to_text(cell.children)?, position))
+}
+
+fn to_text(node: Node) -> Result<String> {
+    Ok(match node {
+        Node::Text(text) => text.value,
+        Node::Emphasis(emphasis) => children_to_text(emphasis.children)?,
+        Node::Strong(strong) => children_to_text(strong.children)?,
+        Node::Link(link) => children_to_text(link.children)?,
+        Node::Code(code) => code.value,
+        Node::InlineCode(inline_code) => inline_code.value,
+        other => bail!("Does not expect {other:?}"),
+    })
+}
+
+fn children_to_text(children: Vec<Node>) -> Result<String> {
+    Ok(children
+        .into_iter()
+        .map(|node| to_text(node))
+        .collect::<Result<Vec<String>>>()?
+        .join(""))
 }
 
 #[cfg(test)]
@@ -409,6 +437,85 @@ This is a calculator example
                     )]
                 },],
                 snoozed: Snooze::snooze(NaiveDate::from_ymd_opt(2023, 11, 20).unwrap()),
+            }],
+            commands
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn different_text_nodes() -> Result<()> {
+        let commands = get_commands_from_markdown(parse_markdown(
+            r#"
+[//]: # (decisionTable Table)
+
+|              column                |
+|------------------------------------|
+| Normal text                        |
+| *emphasis text*                    |
+| **strong text**                    |
+| [link](link.html)                  |
+| ``` some code ```                  |
+| `inline code`                      |
+| Normal text *with mixed* **types** |
+
+            "#,
+        ))?;
+        assert_eq!(
+            vec![MarkdownCommand::DecisionTable {
+                class: Class("Table".into(), Position::new(2, 1)),
+                table: vec![
+                    TableRow {
+                        setters: vec![(
+                            MethodName("setColumn".into(), Position::new(4, 8)),
+                            Value("Normal text".into(), Position::new(6, 3))
+                        ),],
+                        getters: vec![]
+                    },
+                    TableRow {
+                        setters: vec![(
+                            MethodName("setColumn".into(), Position::new(4, 8)),
+                            Value("emphasis text".into(), Position::new(7, 3))
+                        ),],
+                        getters: vec![]
+                    },
+                    TableRow {
+                        setters: vec![(
+                            MethodName("setColumn".into(), Position::new(4, 8)),
+                            Value("strong text".into(), Position::new(8, 3))
+                        ),],
+                        getters: vec![]
+                    },
+                    TableRow {
+                        setters: vec![(
+                            MethodName("setColumn".into(), Position::new(4, 8)),
+                            Value("link".into(), Position::new(9, 3))
+                        ),],
+                        getters: vec![]
+                    },
+                    TableRow {
+                        setters: vec![(
+                            MethodName("setColumn".into(), Position::new(4, 8)),
+                            Value("some code".into(), Position::new(10, 3))
+                        ),],
+                        getters: vec![]
+                    },
+                    TableRow {
+                        setters: vec![(
+                            MethodName("setColumn".into(), Position::new(4, 8)),
+                            Value("inline code".into(), Position::new(11, 3))
+                        ),],
+                        getters: vec![]
+                    },
+                    TableRow {
+                        setters: vec![(
+                            MethodName("setColumn".into(), Position::new(4, 8)),
+                            Value("Normal text with mixed types".into(), Position::new(12, 3))
+                        ),],
+                        getters: vec![]
+                    }
+                ],
+                snoozed: Snooze::not_snooze(),
             }],
             commands
         );
