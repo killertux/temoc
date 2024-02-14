@@ -260,7 +260,7 @@ fn to_text(node: Node) -> Result<String> {
 fn children_to_text(children: Vec<Node>) -> Result<String> {
     Ok(children
         .into_iter()
-        .map(|node| to_text(node))
+        .map(to_text)
         .collect::<Result<Vec<String>>>()?
         .join(""))
 }
@@ -467,49 +467,49 @@ This is a calculator example
                 table: vec![
                     TableRow {
                         setters: vec![(
-                            MethodName("setColumn".into(), Position::new(4, 8)),
+                            MethodName("setColumn".into(), Position::new(4, 16)),
                             Value("Normal text".into(), Position::new(6, 3))
                         ),],
                         getters: vec![]
                     },
                     TableRow {
                         setters: vec![(
-                            MethodName("setColumn".into(), Position::new(4, 8)),
+                            MethodName("setColumn".into(), Position::new(4, 16)),
                             Value("emphasis text".into(), Position::new(7, 3))
                         ),],
                         getters: vec![]
                     },
                     TableRow {
                         setters: vec![(
-                            MethodName("setColumn".into(), Position::new(4, 8)),
+                            MethodName("setColumn".into(), Position::new(4, 16)),
                             Value("strong text".into(), Position::new(8, 3))
                         ),],
                         getters: vec![]
                     },
                     TableRow {
                         setters: vec![(
-                            MethodName("setColumn".into(), Position::new(4, 8)),
+                            MethodName("setColumn".into(), Position::new(4, 16)),
                             Value("link".into(), Position::new(9, 3))
                         ),],
                         getters: vec![]
                     },
                     TableRow {
                         setters: vec![(
-                            MethodName("setColumn".into(), Position::new(4, 8)),
+                            MethodName("setColumn".into(), Position::new(4, 16)),
                             Value("some code".into(), Position::new(10, 3))
                         ),],
                         getters: vec![]
                     },
                     TableRow {
                         setters: vec![(
-                            MethodName("setColumn".into(), Position::new(4, 8)),
+                            MethodName("setColumn".into(), Position::new(4, 16)),
                             Value("inline code".into(), Position::new(11, 3))
                         ),],
                         getters: vec![]
                     },
                     TableRow {
                         setters: vec![(
-                            MethodName("setColumn".into(), Position::new(4, 8)),
+                            MethodName("setColumn".into(), Position::new(4, 16)),
                             Value("Normal text with mixed types".into(), Position::new(12, 3))
                         ),],
                         getters: vec![]
