@@ -2,11 +2,10 @@ use std::fmt::Display;
 
 use anyhow::{bail, Result};
 
-use slim_protocol::InstructionResult;
+use slim_protocol::{Id, InstructionResult};
 
 use super::{markdown_commands::Snooze, slim_instructions_from_commands::ExpectedResult};
 
-// TODO: Clean this method. It does have a lot of repetition
 pub fn validate_result(
     file_path: impl Display,
     expected_result: Vec<(ExpectedResult, Snooze)>,
@@ -17,229 +16,136 @@ pub fn validate_result(
         bail!("Number of instruction results `{}` does not matched the expected number of results `{}`", result.len(), expected_result.len())
     }
     for (result, (expected_result, snooze)) in result.into_iter().zip(expected_result.into_iter()) {
-        match expected_result {
-            ExpectedResult::NullOrVoid {
-                id: expected_id,
-                method_name,
-                position,
-            } => match result {
-                InstructionResult::Void { id } => {
-                    if id != expected_id {
-                        failures.push((
-                            format!(
-                                "Different ID in response. Expected {expected_id} but got {id}"
-                            ),
-                            snooze.clone(),
-                        ));
-                        continue;
-                    }
-                }
-                InstructionResult::Ok { id } => {
-                    if id != expected_id {
-                        failures.push((
-                            format!(
-                                "Different ID in response. Expected {expected_id} but got {id}"
-                            ),
-                            snooze.clone(),
-                        ));
-                        continue;
-                    }
-                    failures.push((
-                        format!(
-                            "Expected NULL, got OK in {file_path}:{position} for method call {}",
-                            method_name.0
-                        ),
-                        snooze.clone(),
-                    ));
-                }
-                InstructionResult::String { id, value } => {
-                    if id != expected_id {
-                        failures.push((
-                            format!(
-                                "Different ID in response. Expected {expected_id} but got {id}"
-                            ),
-                            snooze.clone(),
-                        ));
-                        continue;
-                    }
-                    if value.to_lowercase() != "null" {
-                        failures.push((
-                            format!(
-                            "Expected NULL, got `{value}` in {file_path}:{position} for method call {}",
-                            method_name.0
-                        ),
-                            snooze.clone(),
-                        ));
-                    }
-                    continue;
-                }
-                InstructionResult::Exception { id, message } => {
-                    if id != expected_id {
-                        failures.push((
-                            format!(
-                                "Different ID in response. Expected {expected_id} but got {id}"
-                            ),
-                            snooze.clone(),
-                        ));
-                        continue;
-                    }
-                    failures.push((
-                        format!("Expected OK, got Exception `{}` in {file_path}:{position} for method call {}", message.pretty_message()?, method_name.0),
-                        snooze.clone(),
-                    ));
-                }
-            },
-            ExpectedResult::Ok {
-                id: expected_id,
-                position,
-            } => match result {
-                InstructionResult::Void { id } => {
-                    if id != expected_id {
-                        failures.push((
-                            format!(
-                                "Different ID in response. Expected {expected_id} but got {id}"
-                            ),
-                            snooze.clone(),
-                        ));
-                        continue;
-                    }
-                    failures.push((
-                        format!("Expected OK, got NULL in {file_path}:{position}"),
-                        snooze.clone(),
-                    ));
-                }
-                InstructionResult::Ok { id } => {
-                    if id != expected_id {
-                        failures.push((
-                            format!(
-                                "Different ID in response. Expected {expected_id} but got {id}"
-                            ),
-                            snooze.clone(),
-                        ));
-                        continue;
-                    }
-                }
-                InstructionResult::String { id, value } => {
-                    if id != expected_id {
-                        failures.push((
-                            format!(
-                                "Different ID in response. Expected {expected_id} but got {id}"
-                            ),
-                            snooze.clone(),
-                        ));
-                        continue;
-                    }
-                    failures.push((
-                        format!("Expected OK, got `{value}` in {file_path}:{position}"),
-                        snooze.clone(),
-                    ));
-                }
-                InstructionResult::Exception { id, message } => {
-                    if id != expected_id {
-                        failures.push((
-                            format!(
-                                "Different ID in response. Expected {expected_id} but got {id}"
-                            ),
-                            snooze.clone(),
-                        ));
-                        continue;
-                    }
-                    failures.push((
-                        format!(
-                            "Expected OK, got Exception `{}` in {file_path}:{position}",
-                            message.pretty_message()?
-                        ),
-                        snooze.clone(),
-                    ));
-                }
-            },
-            ExpectedResult::String {
-                id: expected_id,
-                value: expected_value,
-                method_name,
-                position,
-            } => match result {
-                InstructionResult::Void { id } => {
-                    if id != expected_id {
-                        failures.push((
-                            format!(
-                                "Different ID in response. Expected {expected_id} but got {id}"
-                            ),
-                            snooze.clone(),
-                        ));
-                        continue;
-                    }
-                    failures.push((format!(
-                        "Expected `{expected_value}`, got NULL in {file_path}:{position} for method call {}",
-                        method_name.0
-                    ), snooze.clone()));
-                }
-                InstructionResult::Ok { id } => {
-                    if id != expected_id {
-                        failures.push((
-                            format!(
-                                "Different ID in response. Expected {expected_id} but got {id}"
-                            ),
-                            snooze.clone(),
-                        ));
-                        continue;
-                    }
-                    failures.push((format!(
-                        "Expected `{expected_value}`, got OK in {file_path}:{position} for method call {}",
-                        method_name.0
-                    ), snooze.clone()));
-                }
-                InstructionResult::String { id, value } => {
-                    if id != expected_id {
-                        failures.push((
-                            format!(
-                                "Different ID in response. Expected {expected_id} but got {id}"
-                            ),
-                            snooze.clone(),
-                        ));
-                        continue;
-                    }
-                    if expected_value != value {
-                        failures.push((format!(
-                            "Expected `{expected_value}`, got `{value}` in {file_path}:{position} for method call {}",
-                            method_name.0
-                        ), snooze.clone()));
-                    }
-                }
-                InstructionResult::Exception { id, message } => {
-                    if id != expected_id {
-                        failures.push((
-                            format!(
-                                "Different ID in response. Expected {expected_id} but got {id}"
-                            ),
-                            snooze.clone(),
-                        ));
-                        continue;
-                    }
-                    failures.push((
-                        format!("Expected OK, got Exception `{}` in {file_path}:{position} for method call {}", message.pretty_message()?, method_name.0),
-                        snooze.clone(),
-                    ));
-                }
-            },
-            ExpectedResult::Any { id: expected_id } => match result {
-                InstructionResult::Void { id }
-                | InstructionResult::Ok { id }
-                | InstructionResult::Exception { id, message: _ }
-                | InstructionResult::String { id, value: _ } => {
-                    if id != expected_id {
-                        failures.push((
-                            format!(
-                                "Different ID in response. Expected {expected_id} but got {id}"
-                            ),
-                            snooze,
-                        ));
-                    }
-                }
-            },
+        if expected_result.get_id() != result.get_id() {
+            failures.push((
+                format!(
+                    "Different ID in response. Expected {} but got {}",
+                    expected_result.get_id(),
+                    result.get_id()
+                ),
+                snooze.clone(),
+            ));
+            continue;
+        }
+        if expected_result != result {
+            failures.push((
+                format!(
+                    "Expected {}, got {} {}",
+                    expected_result,
+                    result,
+                    failure_expected_result_detail_message(&file_path, &expected_result)
+                ),
+                snooze.clone(),
+            ));
         }
     }
     Ok(failures)
+}
+
+trait GetId {
+    fn get_id(&self) -> &Id;
+}
+
+impl GetId for ExpectedResult {
+    fn get_id(&self) -> &Id {
+        match self {
+            ExpectedResult::Ok { id, position: _ } => id,
+            ExpectedResult::Any { id } => id,
+            ExpectedResult::String {
+                id,
+                value: _,
+                method_name: _,
+                position: _,
+            } => id,
+            ExpectedResult::NullOrVoid {
+                id,
+                method_name: _,
+                position: _,
+            } => id,
+        }
+    }
+}
+
+impl GetId for InstructionResult {
+    fn get_id(&self) -> &Id {
+        match self {
+            InstructionResult::Ok { id } => id,
+            InstructionResult::String { id, value: _ } => id,
+            InstructionResult::Void { id } => id,
+            InstructionResult::Exception { id, message: _ } => id,
+        }
+    }
+}
+
+impl PartialEq<InstructionResult> for ExpectedResult {
+    fn eq(&self, other: &InstructionResult) -> bool {
+        match (self, other) {
+            (ExpectedResult::Any { id: _ }, _) => true,
+            (
+                ExpectedResult::NullOrVoid {
+                    id: _,
+                    method_name: _,
+                    position: _,
+                },
+                InstructionResult::Void { id: _ },
+            ) => true,
+            (
+                ExpectedResult::NullOrVoid {
+                    id: _,
+                    method_name: _,
+                    position: _,
+                },
+                InstructionResult::String { id: _, value },
+            ) if value.to_lowercase() == "null" => true,
+            (
+                ExpectedResult::NullOrVoid {
+                    id: _,
+                    method_name: _,
+                    position: _,
+                },
+                _,
+            ) => false,
+            (ExpectedResult::Ok { id: _, position: _ }, InstructionResult::Ok { id: _ }) => true,
+            (ExpectedResult::Ok { id: _, position: _ }, _) => false,
+            (
+                ExpectedResult::String {
+                    id: _,
+                    value: expected_value,
+                    method_name: _,
+                    position: _,
+                },
+                InstructionResult::String {
+                    id: _,
+                    value: actual_value,
+                },
+            ) if expected_value == actual_value => true,
+            _ => false,
+        }
+    }
+}
+
+fn failure_expected_result_detail_message(
+    file_path: impl Display,
+    expected_result: &ExpectedResult,
+) -> String {
+    match expected_result {
+        ExpectedResult::Any { id: _ } => "".into(),
+        ExpectedResult::Ok { id: _, position } => format!("in {file_path}:{position}"),
+        ExpectedResult::NullOrVoid {
+            id: _,
+            method_name,
+            position,
+        }
+        | ExpectedResult::String {
+            id: _,
+            value: _,
+            method_name,
+            position,
+        } => format!(
+            "in {file_path}:{position} for method call {}",
+            method_name.0
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -455,20 +361,20 @@ mod test {
             vec![
                 (format!("Different ID in response. Expected {id_1} but got {id_2}",), Snooze::not_snooze()),
                 (format!(
-                    "Expected NULL, got OK in test_file.md:{position} for method call TestMethod"
+                    "Expected NULL or VOID, got OK in test_file.md:{position} for method call TestMethod"
                 ), Snooze::not_snooze()),
                 (format!(
-                    "Expected NULL, got `Value` in test_file.md:{position} for method call TestMethod"
+                    "Expected NULL or VOID, got `Value` in test_file.md:{position} for method call TestMethod"
                 ), Snooze::not_snooze()),
                 (format!(
-                    "Expected OK, got NULL in test_file.md:{position}"
+                    "Expected OK, got VOID in test_file.md:{position}"
                 ), Snooze::not_snooze()),
                 (format!("Different ID in response. Expected {id_1} but got {id_2}",),Snooze::not_snooze()),
                 (format!(
                     "Expected OK, got `Value` in test_file.md:{position}"
                 ), Snooze::not_snooze()),
                 (format!(
-                    "Expected `Value`, got NULL in test_file.md:{position} for method call TestMethod"
+                    "Expected `Value`, got VOID in test_file.md:{position} for method call TestMethod"
                 ), Snooze::not_snooze()),
                 (format!(
                     "Expected `Value`, got OK in test_file.md:{position} for method call TestMethod"

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::fmt::Display;
 use ulid::Ulid;
 
 use slim_protocol::{Id, Instruction};
@@ -131,6 +132,26 @@ pub enum ExpectedResult {
     Any {
         id: Id,
     },
+}
+
+impl Display for ExpectedResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExpectedResult::Any { id: _ } => write!(f, "ANY"),
+            ExpectedResult::NullOrVoid {
+                id: _,
+                method_name: _,
+                position: _,
+            } => write!(f, "NULL or VOID"),
+            ExpectedResult::Ok { id: _, position: _ } => write!(f, "OK"),
+            ExpectedResult::String {
+                id: _,
+                value,
+                method_name: _,
+                position: _,
+            } => write!(f, "`{}`", value),
+        }
+    }
 }
 
 #[cfg(test)]

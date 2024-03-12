@@ -23,10 +23,10 @@ pub fn process_markdown_into_instructions(
     file_path: impl AsRef<Path>,
 ) -> Result<(Vec<Instruction>, Vec<ExpectedResulWithSnooze>)> {
     let file_path = file_path.as_ref();
-    let file_path_display = file_path.display();
+    let file_path_display = file_path.display().to_string();
     print!("Testing file {}...", file_path_display);
     let markdown = parse_markdown(file_path)?;
-    let commands = get_commands_from_markdown(markdown)?;
+    let commands = get_commands_from_markdown(markdown, file_path_display)?;
     get_instructions_from_commands(commands)
 }
 

@@ -192,6 +192,22 @@ pub enum InstructionResult {
     String { id: Id, value: String },
 }
 
+impl Display for InstructionResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InstructionResult::Ok { id: _ } => write!(f, "OK")?,
+            InstructionResult::Void { id: _ } => write!(f, "VOID")?,
+            InstructionResult::Exception { id: _, message } => write!(
+                f,
+                "Exception `{}`",
+                message.pretty_message().unwrap_or(message.raw_message())
+            )?,
+            InstructionResult::String { id: _, value } => write!(f, "`{}`", value)?,
+        }
+        Ok(())
+    }
+}
+
 #[derive(PartialEq, Eq, Debug)]
 pub struct ExceptionMessage(String);
 

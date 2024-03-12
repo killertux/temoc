@@ -101,7 +101,10 @@ enum MethodType {
     Commentary,
 }
 
-pub fn get_commands_from_markdown(markdown: Node) -> Result<Vec<MarkdownCommand>> {
+pub fn get_commands_from_markdown(
+    markdown: Node,
+    file_path: impl AsRef<str>,
+) -> Result<Vec<MarkdownCommand>> {
     let mut result = Vec::new();
     match markdown {
         Node::Root(root) => {
@@ -109,18 +112,27 @@ pub fn get_commands_from_markdown(markdown: Node) -> Result<Vec<MarkdownCommand>
             for node in root.children {
                 if let Some(test_class) = executing_test {
                     let Node::Table(table) = node else {
-                        bail!("Expected a test table")
+                        bail!(
+                            "Expected a test table. {}",
+                            incorrect_node_error(&node, file_path.as_ref())
+                        )
                     };
                     let mut rows = Vec::new();
                     let mut methods = Vec::new();
                     for row in table.children {
                         let Node::TableRow(row) = row else {
-                            bail!("Expected a table row")
+                            bail!(
+                                "Expected a table row. {}",
+                                incorrect_node_error(&row, file_path.as_ref())
+                            )
                         };
                         if methods.is_empty() {
                             for cell in row.children {
                                 let Node::TableCell(cell) = cell else {
-                                    bail!("Expected a table cell")
+                                    bail!(
+                                        "Expected a table cell. {}",
+                                        incorrect_node_error(&cell, file_path.as_ref())
+                                    )
                                 };
                                 let (text, position) = get_text_and_position(cell)?;
                                 let text = text.trim();
@@ -160,14 +172,21 @@ pub fn get_commands_from_markdown(markdown: Node) -> Result<Vec<MarkdownCommand>
                             setters: Vec::new(),
                             getters: Vec::new(),
                         };
-                        for (i, cell) in row.children.into_iter().enumerate() {
-                            let Node::TableCell(cell) = cell else {
-                                bail!("Expected a table cell")
+                        for (i, n_cell) in row.children.into_iter().enumerate() {
+                            let Node::TableCell(cell) = n_cell else {
+                                bail!(
+                                    "Expected a table cell. {}",
+                                    incorrect_node_error(&n_cell, file_path.as_ref())
+                                )
                             };
                             let (text, position) = get_text_and_position(cell)?;
                             let text = text.trim();
                             match methods.get(i) {
-                                None => bail!("Wrong number of columns in row"),
+                                None => bail!(
+                                    "Wrong number of columns in row at {}:{}",
+                                    file_path.as_ref(),
+                                    position
+                                ),
                                 Some((method_name, MethodType::Getter)) => table_row
                                     .getters
                                     .push((method_name.clone(), Value(text.to_string(), position))),
@@ -226,6 +245,15 @@ pub fn get_commands_from_markdown(markdown: Node) -> Result<Vec<MarkdownCommand>
                     _ => {}
                 }
             }
+            if let Some(class) = executing_test {
+                bail!(
+                    "Expected a decision table for {} at {}:{}:{} but got nothing",
+                    class.0,
+                    file_path.as_ref(),
+                    class.1.line,
+                    class.1.column
+                )
+            }
         }
         _ => bail!("Expected root markdown document"),
     }
@@ -265,14 +293,30 @@ fn children_to_text(children: Vec<Node>) -> Result<String> {
         .join(""))
 }
 
+fn incorrect_node_error(node: &Node, file_path: &str) -> String {
+    format!(
+        "Got `{}` at {}:{}",
+        node.to_string(),
+        file_path,
+        node_position_to_error(node.position())
+    )
+}
+
+fn node_position_to_error(position: Option<&MPosition>) -> String {
+    position
+        .map(|position| format!("{}:{}", position.start.line, position.start.column))
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
 
     #[test]
     fn calculator() -> Result<()> {
-        let commands = get_commands_from_markdown(parse_markdown(
-            r#"
+        let commands = get_commands_from_markdown(
+            parse_markdown(
+                r#"
 ## Calculator
 
 This is a calculator example
@@ -286,7 +330,9 @@ This is a calculator example
 | 1  | 2   | 3    |
 | 2  | 2   | 4    |
             "#,
-        ))?;
+            ),
+            "test_file.md",
+        )?;
         assert_eq!(
             vec![
                 MarkdownCommand::Import {
@@ -339,15 +385,18 @@ This is a calculator example
 
     #[test]
     fn spaces_into_camel_case_and_handle_set() -> Result<()> {
-        let commands = get_commands_from_markdown(parse_markdown(
-            r#"
+        let commands = get_commands_from_markdown(
+            parse_markdown(
+                r#"
 [//]: # (decisionTable Calculator)
 
 | set a | a getter? |
 |-------|-----------|
 | value | expected  |
             "#,
-        ))?;
+            ),
+            "test_file.md",
+        )?;
         assert_eq!(
             vec![MarkdownCommand::DecisionTable {
                 class: Class("Calculator".into(), Position::new(2, 1)),
@@ -370,28 +419,34 @@ This is a calculator example
 
     #[test]
     fn tables_without_test_header_should_ignore() -> Result<()> {
-        let commands = get_commands_from_markdown(parse_markdown(
-            r#"
+        let commands = get_commands_from_markdown(
+            parse_markdown(
+                r#"
 | set a | a getter? |
 |-------|-----------|
 | value | expected  |
             "#,
-        ))?;
+            ),
+            "test_file.md",
+        )?;
         assert_eq!(Vec::<MarkdownCommand>::new(), commands);
         Ok(())
     }
 
     #[test]
     fn ignore_commentaries() -> Result<()> {
-        let commands = get_commands_from_markdown(parse_markdown(
-            r#"
+        let commands = get_commands_from_markdown(
+            parse_markdown(
+                r#"
 [//]: # (decisionTable Calculator)
 
 | a     | # comment | b?        |
-|-------|-----------|-----------|  
+|-------|-----------|-----------|
 | value | comment   | expected  |
             "#,
-        ))?;
+            ),
+            "test_file.md",
+        )?;
         assert_eq!(
             vec![MarkdownCommand::DecisionTable {
                 class: Class("Calculator".into(), Position::new(2, 1)),
@@ -414,15 +469,18 @@ This is a calculator example
 
     #[test]
     fn snoozed() -> Result<()> {
-        let commands = get_commands_from_markdown(parse_markdown(
-            r#"
+        let commands = get_commands_from_markdown(
+            parse_markdown(
+                r#"
 [//]: # (decisionTable Calculator -- snooze until 2023-11-20)
 
 | a     | b?        |
-|-------|-----------|  
+|-------|-----------|
 | value | expected  |
             "#,
-        ))?;
+            ),
+            "test_file.md",
+        )?;
         assert_eq!(
             vec![MarkdownCommand::DecisionTable {
                 class: Class("Calculator".into(), Position::new(2, 1)),
@@ -445,8 +503,9 @@ This is a calculator example
 
     #[test]
     fn different_text_nodes() -> Result<()> {
-        let commands = get_commands_from_markdown(parse_markdown(
-            r#"
+        let commands = get_commands_from_markdown(
+            parse_markdown(
+                r#"
 [//]: # (decisionTable Table)
 
 |              column                |
@@ -460,7 +519,9 @@ This is a calculator example
 | Normal text *with mixed* **types** |
 
             "#,
-        ))?;
+            ),
+            "test_file.md",
+        )?;
         assert_eq!(
             vec![MarkdownCommand::DecisionTable {
                 class: Class("Table".into(), Position::new(2, 1)),
@@ -518,6 +579,64 @@ This is a calculator example
                 snoozed: Snooze::not_snooze(),
             }],
             commands
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn error_expected_a_table_got_nothing() -> Result<()> {
+        let commands = get_commands_from_markdown(
+            parse_markdown(
+                r#"
+[//]: # (decisionTable Calculator)
+
+            "#,
+            ),
+            "test_file.md",
+        );
+        assert_eq!(
+            "Expected a decision table for Calculator at test_file.md:2:1 but got nothing",
+            commands.unwrap_err().to_string()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn error_expected_a_table_got_other_node() -> Result<()> {
+        let commands = get_commands_from_markdown(
+            parse_markdown(
+                r#"
+[//]: # (decisionTable Calculator)
+Another node
+
+            "#,
+            ),
+            "test_file.md",
+        );
+        assert_eq!(
+            "Expected a test table. Got `Another node` at test_file.md:3:1",
+            commands.unwrap_err().to_string()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn error_wrong_number_of_columns() -> Result<()> {
+        let commands = get_commands_from_markdown(
+            parse_markdown(
+                r#"
+[//]: # (decisionTable Calculator)
+| a     | b?        |
+|-------|-----------|
+| value | expected  | extra |
+
+            "#,
+            ),
+            "test_file.md",
+        );
+        assert_eq!(
+            "Wrong number of columns in row at test_file.md:5:23",
+            commands.unwrap_err().to_string()
         );
         Ok(())
     }
