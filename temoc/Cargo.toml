@@ -1,6 +1,6 @@
 [package]
 name = "temoc"
-version = "0.3.0"
+version = "0.5.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "An Acceptance test executor"
@@ -17,7 +17,7 @@ convert_case = "0.6.0"
 markdown = "1.0.0-alpha.14"
 toml = "0.8.8"
 ulid = "1"
-slim_protocol = { path = "../slim_protocol"}
+slim_protocol = { path = "../slim_protocol" }
 
 [dev-dependencies]
-rust_slim = { path = "../rust_slim/", features = ["macros"]}
+rust_slim = { path = "../rust_slim/", features = ["macros"] }

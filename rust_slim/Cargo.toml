@@ -12,9 +12,9 @@ readme = "readme.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-slim_protocol = "0.2.0"
+slim_protocol = { path = "../slim_protocol" }
 convert_case = "0.6.0"
-rust_slim_macros = { version = "0.1", optional = true }
+rust_slim_macros = { path = "../rust_slim_macros", optional = true }
 thiserror = "1"
 
 [dev-dependencies]

@@ -342,7 +342,7 @@ dependencies = [
 
 [[package]]
 name = "rust_slim"
-version = "0.1.2"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "convert_case",
@@ -392,7 +392,7 @@ dependencies = [
 
 [[package]]
 name = "slim_protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "thiserror",
  "ulid",
@@ -417,7 +417,7 @@ dependencies = [
 
 [[package]]
 name = "temoc"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "chrono",
