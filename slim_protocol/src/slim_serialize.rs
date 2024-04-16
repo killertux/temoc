@@ -1,4 +1,4 @@
-use crate::InstructionResult;
+use crate::{InstructionResult, InstructionResultValue};
 
 use super::Instruction;
 
@@ -106,19 +106,34 @@ impl ToSlimString for Instruction {
     }
 }
 
+impl ToSlimString for Box<dyn ToSlimString> {
+    fn to_slim_string(&self) -> SlimString {
+        self.as_ref().to_slim_string()
+    }
+}
+
 impl ToSlimString for InstructionResult {
     fn to_slim_string(&self) -> SlimString {
+        [
+            Box::new(self.id.0.clone()) as Box<dyn ToSlimString>,
+            Box::new(self.value.clone()) as Box<dyn ToSlimString>,
+        ]
+        .to_slim_string()
+    }
+}
+
+impl ToSlimString for InstructionResultValue {
+    fn to_slim_string(&self) -> SlimString {
         match self {
-            InstructionResult::Ok { id } => [id.0.as_str(), "OK"].to_slim_string(),
-            InstructionResult::Void { id } => [id.0.as_str(), "/__VOID__/"].to_slim_string(),
-            InstructionResult::String { id, value } => {
-                [id.0.as_str(), value.as_str()].to_slim_string()
+            InstructionResultValue::Ok => "OK".to_slim_string(),
+            InstructionResultValue::Void => "/__VOID__/".to_slim_string(),
+            InstructionResultValue::String(value) => value.as_str().to_slim_string(),
+            InstructionResultValue::Exception(message) => {
+                format!("__EXCEPTION__:{}", message.raw_message())
+                    .as_str()
+                    .to_slim_string()
             }
-            InstructionResult::Exception { id, message } => [
-                id.0.as_str(),
-                format!("__EXCEPTION__:{}", message.raw_message()).as_str(),
-            ]
-            .to_slim_string(),
+            InstructionResultValue::List(list) => list.to_slim_string(),
         }
     }
 }

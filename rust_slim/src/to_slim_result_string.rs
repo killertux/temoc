@@ -67,3 +67,33 @@ where
         }
     }
 }
+
+impl<T, const S: usize> ToSlimResultString for [T; S]
+where
+    T: ToSlimResultString,
+{
+    fn to_slim_result_string(self) -> Result<String, ExecuteMethodError> {
+        iterator_to_slim_result_string(self.into_iter())
+    }
+}
+
+impl<T> ToSlimResultString for Vec<T>
+where
+    T: ToSlimResultString,
+{
+    fn to_slim_result_string(self) -> Result<String, ExecuteMethodError> {
+        iterator_to_slim_result_string(self.into_iter())
+    }
+}
+
+fn iterator_to_slim_result_string(
+    iterator: impl Iterator<Item = impl ToSlimResultString>,
+) -> Result<String, ExecuteMethodError> {
+    Ok(format!(
+        "/__ARRAY[{}]__/",
+        iterator
+            .map(|v| v.to_slim_result_string())
+            .collect::<Result<Vec<String>, ExecuteMethodError>>()?
+            .join("__|__")
+    ))
+}

@@ -38,6 +38,10 @@ mod fixtures {
         pub fn div(&self) -> i64 {
             self.a / self.b
         }
+
+        pub fn log(&self, a: f64, b: f64) -> [String; 2] {
+            [format!("{:.2}", a.log(b)), format!("{:.2}", b.log(a))]
+        }
     }
 }
 

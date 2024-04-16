@@ -1,7 +1,7 @@
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, Cursor};
 use thiserror::Error;
 
-use crate::{ExceptionMessage, Instruction};
+use crate::{ExceptionMessage, Instruction, InstructionResultValue};
 
 use super::{ByeOrSlimInstructions, Id, InstructionResult};
 
@@ -58,23 +58,51 @@ where
     }
 }
 
+impl FromSlimReader for InstructionResultValue {
+    fn from_reader(reader: &mut impl BufRead) -> Result<Self, FromSlimReaderError> {
+        let value = String::from_reader(reader)?;
+        Ok(match value.as_str() {
+            "OK" => InstructionResultValue::Ok,
+            "/__VOID__/" => InstructionResultValue::Void,
+            value if value.starts_with('[') => {
+                let values: Vec<InstructionResultValue> =
+                    Vec::from_reader(&mut Cursor::new(value))?;
+                InstructionResultValue::List(values)
+            }
+            other => {
+                if let Some(message) = other.strip_prefix("__EXCEPTION__:") {
+                    InstructionResultValue::Exception(ExceptionMessage::new(message.into()))
+                } else {
+                    InstructionResultValue::String(other.into())
+                }
+            }
+        })
+    }
+}
+
 impl FromSlimReader for InstructionResult {
     fn from_reader(reader: &mut impl BufRead) -> Result<Self, FromSlimReaderError> {
         let [id, value] = <[String; 2]>::from_reader(reader)?;
         let id = Id::from(id);
-        Ok(match value.as_str() {
-            "OK" => InstructionResult::Ok { id },
-            "/__VOID__/" => InstructionResult::Void { id },
-            other => {
-                if let Some(message) = other.strip_prefix("__EXCEPTION__:") {
-                    InstructionResult::Exception {
-                        id,
-                        message: ExceptionMessage::new(message.into()),
-                    }
-                } else {
-                    InstructionResult::String { id, value }
+        Ok(InstructionResult {
+            id,
+            value: match value.as_str() {
+                "OK" => InstructionResultValue::Ok,
+                "/__VOID__/" => InstructionResultValue::Void,
+                value if value.starts_with('[') => {
+                    let value = format!("{:0>6}:{}", value.len(), value);
+                    let values: Vec<InstructionResultValue> =
+                        Vec::from_reader(&mut Cursor::new(value))?;
+                    InstructionResultValue::List(values)
                 }
-            }
+                other => {
+                    if let Some(message) = other.strip_prefix("__EXCEPTION__:") {
+                        InstructionResultValue::Exception(ExceptionMessage::new(message.into()))
+                    } else {
+                        InstructionResultValue::String(other.into())
+                    }
+                }
+            },
         })
     }
 }
@@ -260,39 +288,54 @@ mod test {
     fn read_instruction_result() -> Result<(), Box<dyn Error>> {
         let id = Id::from("01HFM0NQM3ZS6BBX0ZH6VA6DJX");
         assert_eq!(
-            InstructionResult::Ok { id: id.clone() },
+            InstructionResult {
+                id: id.clone(),
+                value: InstructionResultValue::Ok
+            },
             InstructionResult::from_reader(&mut Cursor::new(
                 "000053:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000002:OK:]"
             ))?
         );
         assert_eq!(
-            InstructionResult::Void { id: id.clone() },
+            InstructionResult {
+                id: id.clone(),
+                value: InstructionResultValue::Void
+            },
             InstructionResult::from_reader(&mut Cursor::new(
                 "000061:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000010:/__VOID__/:]"
             ))?
         );
         assert_eq!(
-            InstructionResult::String {
+            InstructionResult {
                 id: id.clone(),
-                value: "null".to_string()
+                value: InstructionResultValue::String("null".to_string()),
             },
             InstructionResult::from_reader(&mut Cursor::new(
                 "000055:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000004:null:]"
             ))?
         );
         assert_eq!(
-            InstructionResult::String {
+            InstructionResult {
                 id: id.clone(),
-                value: "Value".into()
+                value: InstructionResultValue::String("Value".to_string()),
             },
             InstructionResult::from_reader(&mut Cursor::new(
                 "000056:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000005:Value:]"
             ))?
         );
         assert_eq!(
-            InstructionResult::Exception {
+            InstructionResult {
                 id: id.clone(),
-                message: ExceptionMessage::new("Message".into()),
+                value: InstructionResultValue::List(vec![InstructionResultValue::String("Value 1".to_string()), InstructionResultValue::String("Value 2".to_string())]),
+            },
+            InstructionResult::from_reader(&mut Cursor::new(
+                "000056:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000039:[000002:000007:Value 1:000007:Value 2:]:]"
+            ))?
+        );
+        assert_eq!(
+            InstructionResult {
+                id: id.clone(),
+                value: InstructionResultValue::Exception(ExceptionMessage::new("Message".into())),
             },
             InstructionResult::from_reader(&mut Cursor::new(
                 "000073:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:0000021:__EXCEPTION__:Message:]"
@@ -302,13 +345,15 @@ mod test {
             "000100:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:0000048:__EXCEPTION__:Some Exception message:<<Message>>:]"
         ))?;
         assert_eq!(
-            InstructionResult::Exception {
+            InstructionResult {
                 id: id.clone(),
-                message: ExceptionMessage::new("Some Exception message:<<Message>>".into())
+                value: InstructionResultValue::Exception(ExceptionMessage::new(
+                    "Some Exception message:<<Message>>".into()
+                ))
             },
             exception
         );
-        let InstructionResult::Exception { id: _, message } = exception else {
+        let InstructionResultValue::Exception(message) = exception.value else {
             return Err("Expected exception".into());
         };
         assert_eq!("Message", message.pretty_message()?);

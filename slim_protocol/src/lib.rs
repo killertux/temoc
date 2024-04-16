@@ -185,30 +185,83 @@ pub enum Instruction {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum InstructionResult {
-    Ok { id: Id },
-    Void { id: Id },
-    Exception { id: Id, message: ExceptionMessage },
-    String { id: Id, value: String },
+pub struct InstructionResult {
+    pub id: Id,
+    pub value: InstructionResultValue,
 }
 
-impl Display for InstructionResult {
+impl InstructionResult {
+    pub fn new(id: Id, value: InstructionResultValue) -> Self {
+        Self { id, value }
+    }
+
+    pub fn ok(id: Id) -> Self {
+        Self {
+            id,
+            value: InstructionResultValue::Ok,
+        }
+    }
+    pub fn void(id: Id) -> Self {
+        Self {
+            id,
+            value: InstructionResultValue::Void,
+        }
+    }
+    pub fn exception(id: Id, message: ExceptionMessage) -> Self {
+        Self {
+            id,
+            value: InstructionResultValue::Exception(message),
+        }
+    }
+    pub fn string(id: Id, string: String) -> Self {
+        Self {
+            id,
+            value: InstructionResultValue::String(string),
+        }
+    }
+    pub fn list(id: Id, values: Vec<InstructionResultValue>) -> Self {
+        Self {
+            id,
+            value: InstructionResultValue::List(values),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum InstructionResultValue {
+    Ok,
+    Void,
+    Exception(ExceptionMessage),
+    String(String),
+    List(Vec<InstructionResultValue>),
+}
+
+impl Display for InstructionResultValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            InstructionResult::Ok { id: _ } => write!(f, "OK")?,
-            InstructionResult::Void { id: _ } => write!(f, "VOID")?,
-            InstructionResult::Exception { id: _, message } => write!(
+            InstructionResultValue::Ok => write!(f, "OK")?,
+            InstructionResultValue::Void => write!(f, "VOID")?,
+            InstructionResultValue::Exception(message) => write!(
                 f,
                 "Exception `{}`",
                 message.pretty_message().unwrap_or(message.raw_message())
             )?,
-            InstructionResult::String { id: _, value } => write!(f, "`{}`", value)?,
+            InstructionResultValue::String(value) => write!(f, "`{}`", value)?,
+            InstructionResultValue::List(value) => write!(
+                f,
+                "[{}]",
+                value
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<String>>()
+                    .join(",")
+            )?,
         }
         Ok(())
     }
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub struct ExceptionMessage(String);
 
 #[derive(Debug, Error)]
@@ -290,14 +343,17 @@ mod test {
         drop(connection);
         assert_eq!(
             vec![
-                InstructionResult::Ok { id: id.clone() },
-                InstructionResult::String {
+                InstructionResult {
                     id: id.clone(),
-                    value: "null".into()
+                    value: InstructionResultValue::Ok
                 },
-                InstructionResult::String {
+                InstructionResult {
                     id: id.clone(),
-                    value: "Hello".into()
+                    value: InstructionResultValue::String("null".into()),
+                },
+                InstructionResult {
+                    id: id.clone(),
+                    value: InstructionResultValue::String("Hello".into()),
                 }
             ],
             result

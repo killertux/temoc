@@ -4,7 +4,9 @@ use ulid::Ulid;
 
 use slim_protocol::{Id, Instruction};
 
-use super::markdown_commands::{Class, MarkdownCommand, MethodName, Position, Snooze, Value};
+use super::markdown_commands::{
+    Class, DecisionTableType, MarkdownCommand, MethodName, Position, Snooze, Value,
+};
 
 pub type ExpectedResulWithSnooze = (ExpectedResult, Snooze);
 
@@ -21,10 +23,11 @@ pub fn get_instructions_from_commands(
                     id: id.clone(),
                     path,
                 });
-                expected_result.push((ExpectedResult::Ok { id, position }, Snooze::not_snooze()))
+                expected_result.push((ExpectedResult::ok(id, position), Snooze::not_snooze()))
             }
             MarkdownCommand::DecisionTable {
                 class: Class(test_class, position),
+                r#type,
                 table,
                 snoozed,
             } => {
@@ -36,7 +39,7 @@ pub fn get_instructions_from_commands(
                     class: test_class,
                     args: Vec::new(),
                 });
-                expected_result.push((ExpectedResult::Ok { id, position }, snoozed.clone()));
+                expected_result.push((ExpectedResult::ok(id, position.clone()), snoozed.clone()));
                 let id = Id::new();
                 instructions.push(Instruction::Call {
                     id: id.clone(),
@@ -44,7 +47,7 @@ pub fn get_instructions_from_commands(
                     function: "beginTable".into(),
                     args: Vec::new(),
                 });
-                expected_result.push((ExpectedResult::Any { id }, snoozed.clone()));
+                expected_result.push((ExpectedResult::any(id, position.clone()), snoozed.clone()));
                 for row in table.into_iter() {
                     let id = Id::new();
                     instructions.push(Instruction::Call {
@@ -53,49 +56,70 @@ pub fn get_instructions_from_commands(
                         function: "reset".into(),
                         args: Vec::new(),
                     });
-                    expected_result.push((ExpectedResult::Any { id }, snoozed.clone()));
-                    for (setter_name, Value(value, position)) in row.setters.into_iter() {
-                        let id = Id::new();
-                        instructions.push(Instruction::Call {
-                            id: id.clone(),
-                            instance: table_instance.clone(),
-                            function: setter_name.0.clone(),
-                            args: vec![value],
-                        });
-                        expected_result.push((
-                            ExpectedResult::NullOrVoid {
-                                id,
-                                method_name: setter_name,
-                                position,
-                            },
-                            snoozed.clone(),
-                        ));
-                    }
-                    let id = Id::new();
-                    instructions.push(Instruction::Call {
-                        id: id.clone(),
-                        instance: table_instance.clone(),
-                        function: "execute".into(),
-                        args: Vec::new(),
-                    });
-                    expected_result.push((ExpectedResult::Any { id }, snoozed.clone()));
-                    for (getter_name, Value(value, position)) in row.getters.into_iter() {
-                        let id = Id::new();
-                        instructions.push(Instruction::Call {
-                            id: id.clone(),
-                            instance: table_instance.clone(),
-                            function: getter_name.0.clone(),
-                            args: vec![],
-                        });
-                        expected_result.push((
-                            ExpectedResult::String {
-                                id,
-                                value,
-                                method_name: getter_name,
-                                position,
-                            },
-                            snoozed.clone(),
-                        ));
+                    expected_result.push((
+                        ExpectedResult::any(id, row.position.clone()),
+                        snoozed.clone(),
+                    ));
+                    match r#type {
+                        DecisionTableType::MultipleSetterAndGetters => {
+                            for (setter_name, Value(value, position)) in row.setters.into_iter() {
+                                let id = Id::new();
+                                instructions.push(Instruction::Call {
+                                    id: id.clone(),
+                                    instance: table_instance.clone(),
+                                    function: setter_name.0.clone(),
+                                    args: vec![value],
+                                });
+                                expected_result.push((
+                                    ExpectedResult::null_or_void(id, position, setter_name),
+                                    snoozed.clone(),
+                                ));
+                            }
+                            let id = Id::new();
+                            instructions.push(Instruction::Call {
+                                id: id.clone(),
+                                instance: table_instance.clone(),
+                                function: "execute".into(),
+                                args: Vec::new(),
+                            });
+                            expected_result.push((
+                                ExpectedResult::any(id, row.position.clone()),
+                                snoozed.clone(),
+                            ));
+                            for (getter_name, Value(value, position)) in row.getters.into_iter() {
+                                let id = Id::new();
+                                instructions.push(Instruction::Call {
+                                    id: id.clone(),
+                                    instance: table_instance.clone(),
+                                    function: getter_name.0.clone(),
+                                    args: vec![],
+                                });
+                                expected_result.push((
+                                    ExpectedResult::string(id, position, getter_name, value),
+                                    snoozed.clone(),
+                                ));
+                            }
+                        }
+                        DecisionTableType::SingleMethod(ref method_name) => {
+                            let params =
+                                row.setters.into_iter().map(|setter| setter.1 .0).collect();
+                            let result = row
+                                .getters
+                                .into_iter()
+                                .map(|getter| ExpectedResultValue::String(getter.1 .0))
+                                .collect();
+                            let id = Id::new();
+                            instructions.push(Instruction::Call {
+                                id: id.clone(),
+                                instance: table_instance.clone(),
+                                function: method_name.0.clone(),
+                                args: params,
+                            });
+                            expected_result.push((
+                                ExpectedResult::list(id, row.position, method_name.clone(), result),
+                                snoozed.clone(),
+                            ));
+                        }
                     }
                 }
                 let id = Id::new();
@@ -105,7 +129,7 @@ pub fn get_instructions_from_commands(
                     function: "endTable".into(),
                     args: Vec::new(),
                 });
-                expected_result.push((ExpectedResult::Any { id }, snoozed));
+                expected_result.push((ExpectedResult::any(id, position), snoozed));
             }
         }
     }
@@ -113,43 +137,92 @@ pub fn get_instructions_from_commands(
 }
 
 #[derive(PartialEq, Eq, Debug)]
-pub enum ExpectedResult {
-    Ok {
-        id: Id,
-        position: Position,
-    },
-    NullOrVoid {
-        id: Id,
-        method_name: MethodName,
-        position: Position,
-    },
-    String {
-        id: Id,
-        value: String,
-        method_name: MethodName,
-        position: Position,
-    },
-    Any {
-        id: Id,
-    },
+pub struct ExpectedResult {
+    pub id: Id,
+    pub position: Position,
+    pub method_name: Option<MethodName>,
+    pub value: ExpectedResultValue,
 }
 
-impl Display for ExpectedResult {
+impl ExpectedResult {
+    pub fn ok(id: Id, position: Position) -> Self {
+        Self {
+            id,
+            position,
+            method_name: None,
+            value: ExpectedResultValue::Ok,
+        }
+    }
+
+    pub fn any(id: Id, position: Position) -> Self {
+        Self {
+            id,
+            position,
+            method_name: None,
+            value: ExpectedResultValue::Any,
+        }
+    }
+
+    pub fn null_or_void(id: Id, position: Position, method_name: MethodName) -> Self {
+        Self {
+            id,
+            position,
+            method_name: Some(method_name),
+            value: ExpectedResultValue::NullOrVoid,
+        }
+    }
+
+    pub fn string(id: Id, position: Position, method_name: MethodName, value: String) -> Self {
+        Self {
+            id,
+            position,
+            method_name: Some(method_name),
+            value: ExpectedResultValue::String(value),
+        }
+    }
+
+    pub fn list(
+        id: Id,
+        position: Position,
+        method_name: MethodName,
+        value: Vec<ExpectedResultValue>,
+    ) -> Self {
+        Self {
+            id,
+            position,
+            method_name: Some(method_name),
+            value: ExpectedResultValue::List(value),
+        }
+    }
+}
+
+#[derive(PartialEq, Eq, Debug)]
+pub enum ExpectedResultValue {
+    Any,
+    Ok,
+    NullOrVoid,
+    String(String),
+    List(Vec<ExpectedResultValue>),
+}
+
+impl Display for ExpectedResultValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ExpectedResult::Any { id: _ } => write!(f, "ANY"),
-            ExpectedResult::NullOrVoid {
-                id: _,
-                method_name: _,
-                position: _,
-            } => write!(f, "NULL or VOID"),
-            ExpectedResult::Ok { id: _, position: _ } => write!(f, "OK"),
-            ExpectedResult::String {
-                id: _,
-                value,
-                method_name: _,
-                position: _,
-            } => write!(f, "`{}`", value),
+            ExpectedResultValue::Any => write!(f, "ANY"),
+            ExpectedResultValue::NullOrVoid => write!(f, "NULL or VOID"),
+            ExpectedResultValue::Ok => write!(f, "OK"),
+            ExpectedResultValue::String(value) => write!(f, "`{}`", value),
+            ExpectedResultValue::List(value) => {
+                write!(
+                    f,
+                    "[{}]",
+                    value
+                        .iter()
+                        .map(|v| v.to_string())
+                        .collect::<Vec<String>>()
+                        .join(",")
+                )
+            }
         }
     }
 }
@@ -159,7 +232,7 @@ mod test {
     use anyhow::bail;
     use chrono::NaiveDate;
 
-    use crate::processor::markdown_commands::{Snooze, TableRow};
+    use crate::processor::markdown_commands::{DecisionTableType, Snooze, TableRow};
 
     use super::*;
 
@@ -176,8 +249,8 @@ mod test {
             matches!(&instructions[0], Instruction::Import { id:_, path } if path == "Fixtures"),
         );
         assert!(matches!(
-            &expected_result[0].0,
-            ExpectedResult::Ok { id: _, position: _ }
+            &expected_result[0].0.value,
+            ExpectedResultValue::Ok
         ),);
 
         Ok(())
@@ -189,8 +262,10 @@ mod test {
         let (mut instructions, mut expected_result) =
             get_instructions_from_commands(vec![MarkdownCommand::DecisionTable {
                 class: Class("Class".into(), position.clone()),
+                r#type: DecisionTableType::MultipleSetterAndGetters,
                 table: vec![
                     TableRow {
+                        position: Position::new(1, 0),
                         setters: vec![
                             (
                                 MethodName("setA".into(), position.clone()),
@@ -213,6 +288,7 @@ mod test {
                         ],
                     },
                     TableRow {
+                        position: Position::new(2, 0),
                         setters: vec![
                             (
                                 MethodName("setA".into(), position.clone()),
@@ -250,8 +326,9 @@ mod test {
         };
         assert_eq!("Class", class);
         assert!(args.is_empty());
+
         assert!(
-            matches!(expected_result.remove(0), (ExpectedResult::Ok { id: expected_id, position:_ }, snooze) if expected_id == id && !snooze.should_snooze())
+            matches!(expected_result.remove(0), (ExpectedResult { id: expected_id, position:_, method_name: None, value: ExpectedResultValue::Ok }, snooze) if expected_id == id && !snooze.should_snooze())
         );
         assert!(matches!(
             instructions.remove(0),
@@ -264,7 +341,15 @@ mod test {
         ));
         assert!(matches!(
             expected_result.remove(0),
-            (ExpectedResult::Any { id: _ }, _)
+            (
+                ExpectedResult {
+                    id: _,
+                    position: _,
+                    method_name: None,
+                    value: ExpectedResultValue::Any
+                },
+                _
+            )
         ));
         assert!(matches!(
             instructions.remove(0),
@@ -277,7 +362,15 @@ mod test {
         ));
         assert!(matches!(
             expected_result.remove(0),
-            (ExpectedResult::Any { id: _ }, _)
+            (
+                ExpectedResult {
+                    id: _,
+                    position: _,
+                    method_name: None,
+                    value: ExpectedResultValue::Any
+                },
+                _
+            )
         ));
         assert!(matches!(
             instructions.remove(0),
@@ -290,7 +383,7 @@ mod test {
         ));
         assert!(matches!(
             expected_result.remove(0),
-            (ExpectedResult::NullOrVoid { id:_, method_name, position:_ }, _) if method_name.0 == "setA"
+            (ExpectedResult { id:_, method_name: Some(method_name), position:_, value: ExpectedResultValue::NullOrVoid }, _) if method_name.0 == "setA"
         ));
         assert!(matches!(
             &instructions.remove(0),
@@ -303,7 +396,7 @@ mod test {
         ));
         assert!(matches!(
             &expected_result.remove(0),
-            (ExpectedResult::NullOrVoid { id:_, method_name, position:_ }, _) if method_name.0 == "setB"
+            (ExpectedResult { id:_, method_name: Some(method_name), position:_, value: ExpectedResultValue::NullOrVoid }, _) if method_name.0 == "setB"
         ));
         assert!(matches!(
             instructions.remove(0),
@@ -316,7 +409,15 @@ mod test {
         ));
         assert!(matches!(
             expected_result.remove(0),
-            (ExpectedResult::Any { id: _ }, _)
+            (
+                ExpectedResult {
+                    id: _,
+                    position: _,
+                    method_name: None,
+                    value: ExpectedResultValue::Any
+                },
+                _
+            )
         ));
         assert!(matches!(
             &instructions.remove(0),
@@ -329,10 +430,10 @@ mod test {
         ));
         assert!(matches!(
             &expected_result.remove(0),
-            (ExpectedResult::String {
+            (ExpectedResult {
                 id: _,
-                value,
-                method_name,
+                method_name: Some(method_name),
+                value: ExpectedResultValue::String(value),
                 position: _
             }, _) if method_name.0 == "getA" && value == "1"
         ));
@@ -347,12 +448,14 @@ mod test {
         ));
         assert!(matches!(
             &expected_result.remove(0),
-            (ExpectedResult::String {
+
+            (ExpectedResult {
                 id: _,
-                value,
-                method_name,
+                method_name: Some(method_name),
+                value: ExpectedResultValue::String(value),
                 position: _
             }, _) if method_name.0 == "getB" && value == "2"
+
         ));
         assert!(matches!(
             instructions.remove(0),
@@ -365,7 +468,15 @@ mod test {
         ));
         assert!(matches!(
             expected_result.remove(0),
-            (ExpectedResult::Any { id: _ }, _)
+            (
+                ExpectedResult {
+                    id: _,
+                    position: _,
+                    method_name: None,
+                    value: ExpectedResultValue::Any
+                },
+                _
+            )
         ));
         assert!(matches!(
             &instructions.remove(0),
@@ -378,7 +489,7 @@ mod test {
         ));
         assert!(matches!(
             &expected_result.remove(0),
-            (ExpectedResult::NullOrVoid { id:_, method_name, position:_ }, _) if method_name.0 == "setA"
+            (ExpectedResult { id:_, method_name: Some(method_name), position:_, value: ExpectedResultValue::NullOrVoid }, _) if method_name.0 == "setA"
         ));
         assert!(matches!(
             &instructions.remove(0),
@@ -391,7 +502,7 @@ mod test {
         ));
         assert!(matches!(
             &expected_result.remove(0),
-            (ExpectedResult::NullOrVoid { id:_, method_name, position:_ }, _) if method_name.0 == "setB"
+            (ExpectedResult { id:_, method_name: Some(method_name), position:_, value: ExpectedResultValue::NullOrVoid }, _) if method_name.0 == "setB"
         ));
         assert!(matches!(
             instructions.remove(0),
@@ -404,7 +515,15 @@ mod test {
         ));
         assert!(matches!(
             expected_result.remove(0),
-            (ExpectedResult::Any { id: _ }, _)
+            (
+                ExpectedResult {
+                    id: _,
+                    position: _,
+                    method_name: None,
+                    value: ExpectedResultValue::Any
+                },
+                _
+            )
         ));
         assert!(matches!(
             &instructions.remove(0),
@@ -417,12 +536,12 @@ mod test {
         ));
         assert!(matches!(
             &expected_result.remove(0),
-            (ExpectedResult::String {
+            (ExpectedResult {
                 id: _,
-                value,
-                method_name,
+                method_name: Some(method_name),
+                value: ExpectedResultValue::String(value),
                 position: _
-            },_) if method_name.0 == "getA" && value == "3"
+            }, _) if method_name.0 == "getA" && value == "3"
         ));
         assert!(matches!(
             &instructions.remove(0),
@@ -435,12 +554,12 @@ mod test {
         ));
         assert!(matches!(
             &expected_result.remove(0),
-            (ExpectedResult::String {
+            (ExpectedResult {
                 id: _,
-                value,
-                method_name,
+                method_name: Some(method_name),
+                value: ExpectedResultValue::String(value),
                 position: _
-            },_) if method_name.0 == "getB" && value == "4"
+            }, _) if method_name.0 == "getB" && value == "4"
         ));
         assert!(matches!(
             instructions.remove(0),
@@ -453,7 +572,15 @@ mod test {
         ));
         assert!(matches!(
             expected_result.remove(0),
-            (ExpectedResult::Any { id: _ }, _)
+            (
+                ExpectedResult {
+                    id: _,
+                    position: _,
+                    method_name: None,
+                    value: ExpectedResultValue::Any
+                },
+                _
+            )
         ));
         Ok(())
     }
@@ -464,7 +591,9 @@ mod test {
         let (mut instructions, mut expected_result) =
             get_instructions_from_commands(vec![MarkdownCommand::DecisionTable {
                 class: Class("Class".into(), position.clone()),
+                r#type: DecisionTableType::MultipleSetterAndGetters,
                 table: vec![TableRow {
+                    position: position.clone(),
                     setters: vec![(
                         MethodName("setA".into(), position.clone()),
                         Value("1".into(), position.clone()),
@@ -490,7 +619,7 @@ mod test {
         assert_eq!("Class", class);
         assert!(args.is_empty());
         assert!(
-            matches!(expected_result.remove(0), (ExpectedResult::Ok { id: expected_id, position:_ }, snooze) if expected_id == id && snooze.should_snooze())
+            matches!(expected_result.remove(0), (ExpectedResult { id: expected_id, position:_, method_name: None, value: ExpectedResultValue::Ok }, snooze) if expected_id == id && snooze.should_snooze())
         );
         assert!(matches!(
             instructions.remove(0),
@@ -503,7 +632,7 @@ mod test {
         ));
         assert!(matches!(
             expected_result.remove(0),
-            (ExpectedResult::Any { id: _ }, snooze) if snooze.should_snooze()
+            (ExpectedResult { id: _, position:_, method_name: None, value: ExpectedResultValue::Any }, snooze) if snooze.should_snooze()
         ));
         assert!(matches!(
             instructions.remove(0),
@@ -516,7 +645,7 @@ mod test {
         ));
         assert!(matches!(
             expected_result.remove(0),
-            (ExpectedResult::Any { id: _ }, snooze) if snooze.should_snooze()
+            (ExpectedResult { id: _, position:_, method_name: None, value: ExpectedResultValue::Any }, snooze) if snooze.should_snooze()
         ));
         assert!(matches!(
             instructions.remove(0),
@@ -529,7 +658,7 @@ mod test {
         ));
         assert!(matches!(
             expected_result.remove(0),
-            (ExpectedResult::NullOrVoid { id:_, method_name, position:_ }, snooze) if method_name.0 == "setA" && snooze.should_snooze()
+            (ExpectedResult { id:_, method_name: Some(method_name), position:_, value: ExpectedResultValue::NullOrVoid }, snooze) if method_name.0 == "setA" && snooze.should_snooze()
         ));
         assert!(matches!(
             instructions.remove(0),
@@ -542,7 +671,7 @@ mod test {
         ));
         assert!(matches!(
             expected_result.remove(0),
-            (ExpectedResult::Any { id: _ }, snooze) if snooze.should_snooze()
+            (ExpectedResult { id: _, position:_, method_name: None, value: ExpectedResultValue::Any }, snooze) if snooze.should_snooze()
         ));
         assert!(matches!(
             &instructions.remove(0),
@@ -555,10 +684,10 @@ mod test {
         ));
         assert!(matches!(
             &expected_result.remove(0),
-            (ExpectedResult::String {
+            (ExpectedResult {
                 id: _,
-                value,
-                method_name,
+                value: ExpectedResultValue::String(value),
+                method_name: Some(method_name),
                 position: _
             }, snooze) if method_name.0 == "getA" && value == "1" && snooze.should_snooze()
         ));
@@ -573,7 +702,204 @@ mod test {
         ));
         assert!(matches!(
             expected_result.remove(0),
-            (ExpectedResult::Any { id: _ }, snooze) if snooze.should_snooze()
+            (ExpectedResult { id: _, position:_, method_name: None, value: ExpectedResultValue::Any }, snooze) if snooze.should_snooze()
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn decision_table_single_method() -> Result<()> {
+        let position = Position::new(0, 0);
+        let (mut instructions, mut expected_result) =
+            get_instructions_from_commands(vec![MarkdownCommand::DecisionTable {
+                class: Class("Class".into(), position.clone()),
+                r#type: DecisionTableType::SingleMethod(MethodName(
+                    "Method".into(),
+                    position.clone(),
+                )),
+                table: vec![
+                    TableRow {
+                        position: Position::new(1, 0),
+                        setters: vec![
+                            (
+                                MethodName("setA".into(), position.clone()),
+                                Value("1".into(), position.clone()),
+                            ),
+                            (
+                                MethodName("setB".into(), position.clone()),
+                                Value("2".into(), position.clone()),
+                            ),
+                        ],
+                        getters: vec![
+                            (
+                                MethodName("getA".into(), position.clone()),
+                                Value("1".into(), position.clone()),
+                            ),
+                            (
+                                MethodName("getB".into(), position.clone()),
+                                Value("2".into(), position.clone()),
+                            ),
+                        ],
+                    },
+                    TableRow {
+                        position: Position::new(2, 0),
+                        setters: vec![
+                            (
+                                MethodName("setA".into(), position.clone()),
+                                Value("3".into(), position.clone()),
+                            ),
+                            (
+                                MethodName("setB".into(), position.clone()),
+                                Value("4".into(), position.clone()),
+                            ),
+                        ],
+                        getters: vec![
+                            (
+                                MethodName("getA".into(), position.clone()),
+                                Value("3".into(), position.clone()),
+                            ),
+                            (
+                                MethodName("getB".into(), position.clone()),
+                                Value("4".into(), position.clone()),
+                            ),
+                        ],
+                    },
+                ],
+                snoozed: Snooze::not_snooze(),
+            }])?;
+        assert_eq!(7, instructions.len());
+        assert_eq!(instructions.len(), expected_result.len());
+        let Instruction::Make {
+            id,
+            instance,
+            class,
+            args,
+        } = instructions.remove(0)
+        else {
+            bail!("Expected make");
+        };
+        assert_eq!("Class", class);
+        assert!(args.is_empty());
+
+        assert!(
+            matches!(expected_result.remove(0), (ExpectedResult { id: expected_id, position:_, method_name: None, value: ExpectedResultValue::Ok }, snooze) if expected_id == id && !snooze.should_snooze())
+        );
+        assert!(matches!(
+            instructions.remove(0),
+            Instruction::Call {
+                id: _,
+                instance: expected_instance,
+                function,
+                args
+            } if *expected_instance == instance && function == "beginTable" && args.is_empty()
+        ));
+        assert!(matches!(
+            expected_result.remove(0),
+            (
+                ExpectedResult {
+                    id: _,
+                    position: _,
+                    method_name: None,
+                    value: ExpectedResultValue::Any
+                },
+                _
+            )
+        ));
+        assert!(matches!(
+            instructions.remove(0),
+            Instruction::Call {
+                id: _,
+                instance: expected_instance,
+                function,
+                args
+            } if *expected_instance == instance && function == "reset" && args.is_empty()
+        ));
+        assert!(matches!(
+            expected_result.remove(0),
+            (
+                ExpectedResult {
+                    id: _,
+                    position: _,
+                    method_name: None,
+                    value: ExpectedResultValue::Any
+                },
+                _
+            )
+        ));
+        assert!(matches!(
+            instructions.remove(0),
+            Instruction::Call {
+                id: _,
+                instance: expected_instance,
+                function,
+                args
+            } if *expected_instance == instance && function == "Method" && args == &["1".to_string(), "2".to_string()]
+        ));
+        assert!(matches!(
+            expected_result.remove(0),
+            (ExpectedResult { id:_, method_name: Some(method_name), position:_, value: ExpectedResultValue::List(list) }, _)
+                if method_name.0 == "Method" && list.len() == 2
+                    && list[0] == ExpectedResultValue::String("1".into())
+                    && list[1] == ExpectedResultValue::String("2".into())
+        ));
+        assert!(matches!(
+            instructions.remove(0),
+            Instruction::Call {
+                id: _,
+                instance: expected_instance,
+                function,
+                args
+            } if *expected_instance == instance && function == "reset" && args.is_empty()
+        ));
+        assert!(matches!(
+            expected_result.remove(0),
+            (
+                ExpectedResult {
+                    id: _,
+                    position: _,
+                    method_name: None,
+                    value: ExpectedResultValue::Any
+                },
+                _
+            )
+        ));
+        assert!(matches!(
+            instructions.remove(0),
+            Instruction::Call {
+                id: _,
+                instance: expected_instance,
+                function,
+                args
+            } if *expected_instance == instance && function == "Method" && args == &["3".to_string(), "4".to_string()]
+        ));
+        assert!(matches!(
+            expected_result.remove(0),
+            (ExpectedResult { id:_, method_name: Some(method_name), position:_, value: ExpectedResultValue::List(list) }, _)
+                if method_name.0 == "Method" && list.len() == 2
+                    && list[0] == ExpectedResultValue::String("3".into())
+                    && list[1] == ExpectedResultValue::String("4".into())
+        ));
+
+        assert!(matches!(
+            instructions.remove(0),
+            Instruction::Call {
+                id: _,
+                instance: expected_instance,
+                function,
+                args
+            } if *expected_instance == instance && function == "endTable" && args.is_empty()
+        ));
+        assert!(matches!(
+            expected_result.remove(0),
+            (
+                ExpectedResult {
+                    id: _,
+                    position: _,
+                    method_name: None,
+                    value: ExpectedResultValue::Any
+                },
+                _
+            )
         ));
         Ok(())
     }

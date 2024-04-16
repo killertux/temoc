@@ -2,7 +2,7 @@ use crate::{ClassPath, Constructor, SlimFixture};
 use convert_case::{Case, Casing};
 use slim_protocol::{
     ByeOrSlimInstructions, ExceptionMessage, FromSlimReader, FromSlimReaderError, Instruction,
-    InstructionResult, ToSlimString,
+    InstructionResult, InstructionResultValue, ToSlimString,
 };
 use std::{
     collections::HashMap,
@@ -76,7 +76,7 @@ impl<R: Read, W: Write> SlimServer<R, W> {
             match instruction {
                 Instruction::Import { id, path } => {
                     self.imports.push(path);
-                    results.push(InstructionResult::Ok { id })
+                    results.push(InstructionResult::ok(id))
                 }
                 Instruction::Make {
                     id,
@@ -86,10 +86,10 @@ impl<R: Read, W: Write> SlimServer<R, W> {
                 } => {
                     let class = self.parse_symbol(class);
                     let Some(fixture) = self.find_fixture(&class) else {
-                        results.push(InstructionResult::Exception {
+                        results.push(InstructionResult::exception(
                             id,
-                            message: ExceptionMessage::new(format!("NO CLASS: {class}")),
-                        });
+                            ExceptionMessage::new(format!("NO CLASS: {class}")),
+                        ));
                         continue;
                     };
                     let args = self.parse_symbols(args);
@@ -98,7 +98,7 @@ impl<R: Read, W: Write> SlimServer<R, W> {
                     } else {
                         self.instances.insert(instance, fixture(args));
                     }
-                    results.push(InstructionResult::Ok { id })
+                    results.push(InstructionResult::ok(id))
                 }
                 Instruction::Call {
                     id,
@@ -113,23 +113,35 @@ impl<R: Read, W: Write> SlimServer<R, W> {
                         &mut self.instances
                     };
                     let Some(instance) = instances.get_mut(&instance) else {
-                        results.push(InstructionResult::Exception {
+                        results.push(InstructionResult::exception(
                             id,
-                            message: ExceptionMessage::new(format!("NO_INSTANCE: {instance}")),
-                        });
+                            ExceptionMessage::new(format!("NO_INSTANCE: {instance}")),
+                        ));
                         continue;
                     };
                     let function = function.to_case(Case::Snake);
 
                     match instance.execute_method(&function, args) {
                         Ok(value) if value == "/__VOID__/" => {
-                            results.push(InstructionResult::Void { id })
+                            results.push(InstructionResult::void(id))
                         }
-                        Ok(value) => results.push(InstructionResult::String { id, value }),
-                        Err(error) => results.push(InstructionResult::Exception {
+                        Ok(value) if value.starts_with("/__ARRAY[") && value.ends_with("]__/") => {
+                            let value = value
+                                .trim_start_matches("/__ARRAY[")
+                                .trim_end_matches("]__/");
+                            results.push(InstructionResult::list(
+                                id,
+                                value
+                                    .split("__|__")
+                                    .map(|value| InstructionResultValue::String(value.into()))
+                                    .collect(),
+                            ))
+                        }
+                        Ok(value) => results.push(InstructionResult::string(id, value)),
+                        Err(error) => results.push(InstructionResult::exception(
                             id,
-                            message: ExceptionMessage::new(error.to_string()),
-                        }),
+                            ExceptionMessage::new(error.to_string()),
+                        )),
                     }
                 }
                 Instruction::CallAndAssign {
@@ -146,36 +158,33 @@ impl<R: Read, W: Write> SlimServer<R, W> {
                         &mut self.instances
                     };
                     let Some(instance) = instances.get_mut(&instance) else {
-                        results.push(InstructionResult::Exception {
+                        results.push(InstructionResult::exception(
                             id,
-                            message: ExceptionMessage::new(format!("NO_INSTANCE: {instance}")),
-                        });
+                            ExceptionMessage::new(format!("NO_INSTANCE: {instance}")),
+                        ));
                         continue;
                     };
                     let function = function.to_case(Case::Snake);
                     let symbol = symbol.strip_prefix('$').unwrap_or(&symbol).into();
                     match instance.execute_method(&function, args) {
                         Ok(value) if value == "/__VOID__/" => {
-                            results.push(InstructionResult::Void { id });
+                            results.push(InstructionResult::void(id));
                             self.symbols.insert(symbol, "".into());
                         }
                         Ok(value) => {
-                            results.push(InstructionResult::String {
-                                id,
-                                value: value.clone(),
-                            });
+                            results.push(InstructionResult::string(id, value.clone()));
                             self.symbols.insert(symbol, value);
                         }
-                        Err(error) => results.push(InstructionResult::Exception {
+                        Err(error) => results.push(InstructionResult::exception(
                             id,
-                            message: ExceptionMessage::new(error.to_string()),
-                        }),
+                            ExceptionMessage::new(error.to_string()),
+                        )),
                     }
                 }
                 Instruction::Assign { id, symbol, value } => {
                     let symbol = symbol.strip_prefix('$').unwrap_or(&symbol).into();
                     self.symbols.insert(symbol, value);
-                    results.push(InstructionResult::Ok { id })
+                    results.push(InstructionResult::ok(id))
                 }
             }
         }
@@ -249,12 +258,8 @@ mod tests {
         );
         assert_eq!(
             vec![
-                InstructionResult::Ok {
-                    id: Id::from("id_1")
-                },
-                InstructionResult::Ok {
-                    id: Id::from("id_2")
-                }
+                InstructionResult::ok(Id::from("id_1")),
+                InstructionResult::ok(Id::from("id_2"))
             ],
             result
         );
@@ -297,15 +302,9 @@ mod tests {
         assert!(slim_server.libraries.contains_key("libraryInstance"));
         assert_eq!(
             vec![
-                InstructionResult::Ok {
-                    id: Id::from("m_1")
-                },
-                InstructionResult::Ok {
-                    id: Id::from("m_2")
-                },
-                InstructionResult::Ok {
-                    id: Id::from("m_3")
-                },
+                InstructionResult::ok(Id::from("m_1")),
+                InstructionResult::ok(Id::from("m_2")),
+                InstructionResult::ok(Id::from("m_3")),
             ],
             result
         );
@@ -349,20 +348,10 @@ mod tests {
 
         assert_eq!(
             vec![
-                InstructionResult::Ok {
-                    id: Id::from("m_1")
-                },
-                InstructionResult::Ok {
-                    id: Id::from("m_2")
-                },
-                InstructionResult::String {
-                    id: Id::from("c_1"),
-                    value: "Arg".into()
-                },
-                InstructionResult::String {
-                    id: Id::from("c_2"),
-                    value: "Arg1,Arg2".into()
-                },
+                InstructionResult::ok(Id::from("m_1")),
+                InstructionResult::ok(Id::from("m_2")),
+                InstructionResult::string(Id::from("c_1"), "Arg".into()),
+                InstructionResult::string(Id::from("c_2"), "Arg1,Arg2".into()),
             ],
             result
         );
@@ -420,28 +409,12 @@ mod tests {
 
         assert_eq!(
             vec![
-                InstructionResult::Ok {
-                    id: Id::from("m_1")
-                },
-                InstructionResult::Ok {
-                    id: Id::from("m_2")
-                },
-                InstructionResult::String {
-                    id: Id::from("ca_1"),
-                    value: "Arg".into()
-                },
-                InstructionResult::String {
-                    id: Id::from("c_1"),
-                    value: "Arg in symbol".into()
-                },
-                InstructionResult::String {
-                    id: Id::from("ca_2"),
-                    value: "LibraryArg".into()
-                },
-                InstructionResult::String {
-                    id: Id::from("c_2"),
-                    value: "LibraryArg,Arg2".into()
-                },
+                InstructionResult::ok(Id::from("m_1")),
+                InstructionResult::ok(Id::from("m_2")),
+                InstructionResult::string(Id::from("ca_1"), "Arg".into()),
+                InstructionResult::string(Id::from("c_1"), "Arg in symbol".into()),
+                InstructionResult::string(Id::from("ca_2"), "LibraryArg".into()),
+                InstructionResult::string(Id::from("c_2"), "LibraryArg,Arg2".into()),
             ],
             result
         );
@@ -478,16 +451,9 @@ mod tests {
 
         assert_eq!(
             vec![
-                InstructionResult::Ok {
-                    id: Id::from("m_1")
-                },
-                InstructionResult::Ok {
-                    id: Id::from("a_1")
-                },
-                InstructionResult::String {
-                    id: Id::from("c_1"),
-                    value: "Value in symbol".into()
-                },
+                InstructionResult::ok(Id::from("m_1")),
+                InstructionResult::ok(Id::from("a_1")),
+                InstructionResult::string(Id::from("c_1"), "Value in symbol".into()),
             ],
             result
         );

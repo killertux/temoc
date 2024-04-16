@@ -15,9 +15,16 @@ pub enum MarkdownCommand {
     },
     DecisionTable {
         class: Class,
+        r#type: DecisionTableType,
         table: Vec<TableRow>,
         snoozed: Snooze,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecisionTableType {
+    MultipleSetterAndGetters,
+    SingleMethod(MethodName),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +66,7 @@ pub struct Value(pub String, pub Position);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableRow {
+    pub position: Position,
     pub setters: Vec<(MethodName, Value)>,
     pub getters: Vec<(MethodName, Value)>,
 }
@@ -169,6 +177,7 @@ pub fn get_commands_from_markdown(
                             continue;
                         }
                         let mut table_row = TableRow {
+                            position: row.position.ok_or(anyhow!("Expected position"))?.into(),
                             setters: Vec::new(),
                             getters: Vec::new(),
                         };
@@ -199,7 +208,7 @@ pub fn get_commands_from_markdown(
                         rows.push(table_row);
                     }
                     let mut snoozed = Snooze::not_snooze();
-                    let mut stripped_test_class = String::new();
+                    let mut stripped_test_class = test_class.0.clone();
                     if let Some((class, rest)) = test_class.0.split_once(" -- ") {
                         stripped_test_class = class.into();
                         if let Some(date) = rest.trim().strip_prefix("snooze until") {
@@ -207,12 +216,17 @@ pub fn get_commands_from_markdown(
                                 Snooze::snooze(NaiveDate::parse_from_str(date.trim(), "%Y-%m-%d")?);
                         }
                     }
+                    let mut r#type = DecisionTableType::MultipleSetterAndGetters;
+                    if let Some((class, rest)) = stripped_test_class.split_once('#') {
+                        r#type = DecisionTableType::SingleMethod(MethodName(
+                            rest.into(),
+                            test_class.1.clone(),
+                        ));
+                        stripped_test_class = class.into();
+                    }
                     result.push(MarkdownCommand::DecisionTable {
-                        class: if stripped_test_class.is_empty() {
-                            test_class
-                        } else {
-                            Class(stripped_test_class, test_class.1)
-                        },
+                        class: Class(stripped_test_class, test_class.1),
+                        r#type,
                         table: rows,
                         snoozed,
                     });
@@ -341,8 +355,10 @@ This is a calculator example
                 },
                 MarkdownCommand::DecisionTable {
                     class: Class("Calculator".into(), Position::new(8, 1)),
+                    r#type: DecisionTableType::MultipleSetterAndGetters,
                     table: vec![
                         TableRow {
+                            position: Position::new(12, 1),
                             setters: vec![
                                 (
                                     MethodName("setA".into(), Position::new(10, 3)),
@@ -359,6 +375,7 @@ This is a calculator example
                             )]
                         },
                         TableRow {
+                            position: Position::new(13, 1),
                             setters: vec![
                                 (
                                     MethodName("setA".into(), Position::new(10, 3)),
@@ -400,7 +417,9 @@ This is a calculator example
         assert_eq!(
             vec![MarkdownCommand::DecisionTable {
                 class: Class("Calculator".into(), Position::new(2, 1)),
+                r#type: DecisionTableType::MultipleSetterAndGetters,
                 table: vec![TableRow {
+                    position: Position::new(6, 1),
                     setters: vec![(
                         MethodName("setA".into(), Position::new(4, 3)),
                         Value("value".into(), Position::new(6, 3))
@@ -450,7 +469,9 @@ This is a calculator example
         assert_eq!(
             vec![MarkdownCommand::DecisionTable {
                 class: Class("Calculator".into(), Position::new(2, 1)),
+                r#type: DecisionTableType::MultipleSetterAndGetters,
                 table: vec![TableRow {
+                    position: Position::new(6, 1),
                     setters: vec![(
                         MethodName("setA".into(), Position::new(4, 3)),
                         Value("value".into(), Position::new(6, 3))
@@ -458,6 +479,45 @@ This is a calculator example
                     getters: vec![(
                         MethodName("b".into(), Position::new(4, 23)),
                         Value("expected".into(), Position::new(6, 23))
+                    )]
+                },],
+                snoozed: Snooze::not_snooze(),
+            }],
+            commands
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn single_method() -> Result<()> {
+        let commands = get_commands_from_markdown(
+            parse_markdown(
+                r#"
+[//]: # (decisionTable Calculator#log)
+
+| a     | b?        |
+|-------|-----------|
+| value | expected  |
+            "#,
+            ),
+            "test_file.md",
+        )?;
+        assert_eq!(
+            vec![MarkdownCommand::DecisionTable {
+                class: Class("Calculator".into(), Position::new(2, 1)),
+                r#type: DecisionTableType::SingleMethod(MethodName(
+                    "log".into(),
+                    Position::new(2, 1)
+                )),
+                table: vec![TableRow {
+                    position: Position::new(6, 1),
+                    setters: vec![(
+                        MethodName("setA".into(), Position::new(4, 3)),
+                        Value("value".into(), Position::new(6, 3))
+                    )],
+                    getters: vec![(
+                        MethodName("b".into(), Position::new(4, 11)),
+                        Value("expected".into(), Position::new(6, 11))
                     )]
                 },],
                 snoozed: Snooze::not_snooze(),
@@ -484,7 +544,48 @@ This is a calculator example
         assert_eq!(
             vec![MarkdownCommand::DecisionTable {
                 class: Class("Calculator".into(), Position::new(2, 1)),
+                r#type: DecisionTableType::MultipleSetterAndGetters,
                 table: vec![TableRow {
+                    position: Position::new(6, 1),
+                    setters: vec![(
+                        MethodName("setA".into(), Position::new(4, 3)),
+                        Value("value".into(), Position::new(6, 3))
+                    )],
+                    getters: vec![(
+                        MethodName("b".into(), Position::new(4, 11)),
+                        Value("expected".into(), Position::new(6, 11))
+                    )]
+                },],
+                snoozed: Snooze::snooze(NaiveDate::from_ymd_opt(2023, 11, 20).unwrap()),
+            }],
+            commands
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn single_method_snoozed() -> Result<()> {
+        let commands = get_commands_from_markdown(
+            parse_markdown(
+                r#"
+[//]: # (decisionTable Calculator#log -- snooze until 2023-11-20)
+
+| a     | b?        |
+|-------|-----------|
+| value | expected  |
+            "#,
+            ),
+            "test_file.md",
+        )?;
+        assert_eq!(
+            vec![MarkdownCommand::DecisionTable {
+                class: Class("Calculator".into(), Position::new(2, 1)),
+                r#type: DecisionTableType::SingleMethod(MethodName(
+                    "log".into(),
+                    Position::new(2, 1)
+                )),
+                table: vec![TableRow {
+                    position: Position::new(6, 1),
                     setters: vec![(
                         MethodName("setA".into(), Position::new(4, 3)),
                         Value("value".into(), Position::new(6, 3))
@@ -525,8 +626,10 @@ This is a calculator example
         assert_eq!(
             vec![MarkdownCommand::DecisionTable {
                 class: Class("Table".into(), Position::new(2, 1)),
+                r#type: DecisionTableType::MultipleSetterAndGetters,
                 table: vec![
                     TableRow {
+                        position: Position::new(6, 1),
                         setters: vec![(
                             MethodName("setColumn".into(), Position::new(4, 16)),
                             Value("Normal text".into(), Position::new(6, 3))
@@ -534,6 +637,7 @@ This is a calculator example
                         getters: vec![]
                     },
                     TableRow {
+                        position: Position::new(7, 1),
                         setters: vec![(
                             MethodName("setColumn".into(), Position::new(4, 16)),
                             Value("emphasis text".into(), Position::new(7, 3))
@@ -541,6 +645,7 @@ This is a calculator example
                         getters: vec![]
                     },
                     TableRow {
+                        position: Position::new(8, 1),
                         setters: vec![(
                             MethodName("setColumn".into(), Position::new(4, 16)),
                             Value("strong text".into(), Position::new(8, 3))
@@ -548,6 +653,7 @@ This is a calculator example
                         getters: vec![]
                     },
                     TableRow {
+                        position: Position::new(9, 1),
                         setters: vec![(
                             MethodName("setColumn".into(), Position::new(4, 16)),
                             Value("link".into(), Position::new(9, 3))
@@ -555,6 +661,7 @@ This is a calculator example
                         getters: vec![]
                     },
                     TableRow {
+                        position: Position::new(10, 1),
                         setters: vec![(
                             MethodName("setColumn".into(), Position::new(4, 16)),
                             Value("some code".into(), Position::new(10, 3))
@@ -562,6 +669,7 @@ This is a calculator example
                         getters: vec![]
                     },
                     TableRow {
+                        position: Position::new(11, 1),
                         setters: vec![(
                             MethodName("setColumn".into(), Position::new(4, 16)),
                             Value("inline code".into(), Position::new(11, 3))
@@ -569,6 +677,7 @@ This is a calculator example
                         getters: vec![]
                     },
                     TableRow {
+                        position: Position::new(12, 1),
                         setters: vec![(
                             MethodName("setColumn".into(), Position::new(4, 16)),
                             Value("Normal text with mixed types".into(), Position::new(12, 3))

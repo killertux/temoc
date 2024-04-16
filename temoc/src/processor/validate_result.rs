@@ -2,9 +2,12 @@ use std::fmt::Display;
 
 use anyhow::{bail, Result};
 
-use slim_protocol::{Id, InstructionResult};
+use slim_protocol::{InstructionResult, InstructionResultValue};
 
-use super::{markdown_commands::Snooze, slim_instructions_from_commands::ExpectedResult};
+use super::{
+    markdown_commands::Snooze,
+    slim_instructions_from_commands::{ExpectedResult, ExpectedResultValue},
+};
 
 pub fn validate_result(
     file_path: impl Display,
@@ -16,23 +19,22 @@ pub fn validate_result(
         bail!("Number of instruction results `{}` does not matched the expected number of results `{}`", result.len(), expected_result.len())
     }
     for (result, (expected_result, snooze)) in result.into_iter().zip(expected_result.into_iter()) {
-        if expected_result.get_id() != result.get_id() {
+        if expected_result.id != result.id {
             failures.push((
                 format!(
                     "Different ID in response. Expected {} but got {}",
-                    expected_result.get_id(),
-                    result.get_id()
+                    expected_result.id, result.id
                 ),
                 snooze.clone(),
             ));
             continue;
         }
-        if expected_result != result {
+        if expected_result.value != result.value {
             failures.push((
                 format!(
                     "Expected {}, got {} {}",
-                    expected_result,
-                    result,
+                    expected_result.value,
+                    result.value,
                     failure_expected_result_detail_message(&file_path, &expected_result)
                 ),
                 snooze.clone(),
@@ -42,83 +44,35 @@ pub fn validate_result(
     Ok(failures)
 }
 
-trait GetId {
-    fn get_id(&self) -> &Id;
-}
-
-impl GetId for ExpectedResult {
-    fn get_id(&self) -> &Id {
-        match self {
-            ExpectedResult::Ok { id, position: _ } => id,
-            ExpectedResult::Any { id } => id,
-            ExpectedResult::String {
-                id,
-                value: _,
-                method_name: _,
-                position: _,
-            } => id,
-            ExpectedResult::NullOrVoid {
-                id,
-                method_name: _,
-                position: _,
-            } => id,
-        }
-    }
-}
-
-impl GetId for InstructionResult {
-    fn get_id(&self) -> &Id {
-        match self {
-            InstructionResult::Ok { id } => id,
-            InstructionResult::String { id, value: _ } => id,
-            InstructionResult::Void { id } => id,
-            InstructionResult::Exception { id, message: _ } => id,
-        }
-    }
-}
-
-impl PartialEq<InstructionResult> for ExpectedResult {
-    fn eq(&self, other: &InstructionResult) -> bool {
+impl PartialEq<InstructionResultValue> for ExpectedResultValue {
+    fn eq(&self, other: &InstructionResultValue) -> bool {
         match (self, other) {
-            (ExpectedResult::Any { id: _ }, _) => true,
+            (ExpectedResultValue::Any, _) => true,
+            (ExpectedResultValue::NullOrVoid, InstructionResultValue::Void) => true,
+            (ExpectedResultValue::NullOrVoid, InstructionResultValue::String(value))
+                if value.to_lowercase() == "null" =>
+            {
+                true
+            }
+            (ExpectedResultValue::Ok, InstructionResultValue::Ok) => true,
             (
-                ExpectedResult::NullOrVoid {
-                    id: _,
-                    method_name: _,
-                    position: _,
-                },
-                InstructionResult::Void { id: _ },
-            ) => true,
-            (
-                ExpectedResult::NullOrVoid {
-                    id: _,
-                    method_name: _,
-                    position: _,
-                },
-                InstructionResult::String { id: _, value },
-            ) if value.to_lowercase() == "null" => true,
-            (
-                ExpectedResult::NullOrVoid {
-                    id: _,
-                    method_name: _,
-                    position: _,
-                },
-                _,
-            ) => false,
-            (ExpectedResult::Ok { id: _, position: _ }, InstructionResult::Ok { id: _ }) => true,
-            (ExpectedResult::Ok { id: _, position: _ }, _) => false,
-            (
-                ExpectedResult::String {
-                    id: _,
-                    value: expected_value,
-                    method_name: _,
-                    position: _,
-                },
-                InstructionResult::String {
-                    id: _,
-                    value: actual_value,
-                },
+                ExpectedResultValue::String(expected_value),
+                InstructionResultValue::String(actual_value),
             ) if expected_value == actual_value => true,
+            (
+                ExpectedResultValue::List(expected_list),
+                InstructionResultValue::List(actual_list),
+            ) => {
+                if expected_list.len() != actual_list.len() {
+                    return false;
+                }
+                for (a, b) in expected_list.iter().zip(actual_list.iter()) {
+                    if a != b {
+                        return false;
+                    };
+                }
+                true
+            }
             _ => false,
         }
     }
@@ -128,23 +82,20 @@ fn failure_expected_result_detail_message(
     file_path: impl Display,
     expected_result: &ExpectedResult,
 ) -> String {
-    match expected_result {
-        ExpectedResult::Any { id: _ } => "".into(),
-        ExpectedResult::Ok { id: _, position } => format!("in {file_path}:{position}"),
-        ExpectedResult::NullOrVoid {
-            id: _,
-            method_name,
-            position,
-        }
-        | ExpectedResult::String {
-            id: _,
-            value: _,
-            method_name,
-            position,
-        } => format!(
-            "in {file_path}:{position} for method call {}",
-            method_name.0
-        ),
+    let position = &expected_result.position;
+    let method_name = &expected_result.method_name;
+    match expected_result.value {
+        ExpectedResultValue::Any => "".into(),
+        ExpectedResultValue::Ok => format!("in {file_path}:{position}"),
+        ExpectedResultValue::NullOrVoid
+        | ExpectedResultValue::String(_)
+        | ExpectedResultValue::List(_) => match method_name {
+            Some(method_name) => format!(
+                "in {file_path}:{position} for method call {}",
+                method_name.0
+            ),
+            None => format!("in {file_path}:{position}"),
+        },
     }
 }
 
@@ -160,7 +111,7 @@ mod test {
         let result = validate_result(
             "file_path.md",
             vec![],
-            vec![InstructionResult::Ok { id: Id::new() }],
+            vec![InstructionResult::ok(Id::new())],
         );
         assert_eq!(
             "Number of instruction results `1` does not matched the expected number of results `0`",
@@ -178,58 +129,66 @@ mod test {
             "test_path.md",
             vec![
                 (
-                    ExpectedResult::NullOrVoid {
-                        id: id.clone(),
-                        method_name: method_name.clone(),
-                        position: position.clone(),
-                    },
+                    ExpectedResult::null_or_void(id.clone(), position.clone(), method_name.clone()),
                     Snooze::not_snooze(),
                 ),
                 (
-                    ExpectedResult::NullOrVoid {
-                        id: id.clone(),
-                        method_name: method_name.clone(),
-                        position: position.clone(),
-                    },
+                    ExpectedResult::null_or_void(id.clone(), position.clone(), method_name.clone()),
                     Snooze::not_snooze(),
                 ),
                 (
-                    ExpectedResult::Ok {
-                        id: id.clone(),
-                        position: position.clone(),
-                    },
+                    ExpectedResult::ok(id.clone(), position.clone()),
                     Snooze::not_snooze(),
                 ),
                 (
-                    ExpectedResult::String {
-                        id: id.clone(),
-                        value: "Value".into(),
-                        method_name,
-                        position,
-                    },
+                    ExpectedResult::string(
+                        id.clone(),
+                        position.clone(),
+                        method_name.clone(),
+                        "Value".into(),
+                    ),
                     Snooze::not_snooze(),
                 ),
-                (ExpectedResult::Any { id: id.clone() }, Snooze::not_snooze()),
-                (ExpectedResult::Any { id: id.clone() }, Snooze::not_snooze()),
-                (ExpectedResult::Any { id: id.clone() }, Snooze::not_snooze()),
+                (
+                    ExpectedResult::any(id.clone(), position.clone()),
+                    Snooze::not_snooze(),
+                ),
+                (
+                    ExpectedResult::any(id.clone(), position.clone()),
+                    Snooze::not_snooze(),
+                ),
+                (
+                    ExpectedResult::any(id.clone(), position.clone()),
+                    Snooze::not_snooze(),
+                ),
+                (
+                    ExpectedResult::list(
+                        id.clone(),
+                        position.clone(),
+                        method_name.clone(),
+                        vec![
+                            ExpectedResultValue::String("Value1".into()),
+                            ExpectedResultValue::String("Value2".into()),
+                        ],
+                    ),
+                    Snooze::not_snooze(),
+                ),
             ],
             vec![
-                InstructionResult::Void { id: id.clone() },
-                InstructionResult::String {
-                    id: id.clone(),
-                    value: "NULL".into(),
-                },
-                InstructionResult::Ok { id: id.clone() },
-                InstructionResult::String {
-                    id: id.clone(),
-                    value: "Value".into(),
-                },
-                InstructionResult::Void { id: id.clone() },
-                InstructionResult::Ok { id: id.clone() },
-                InstructionResult::String {
-                    id: id.clone(),
-                    value: "Value".into(),
-                },
+                InstructionResult::void(id.clone()),
+                InstructionResult::string(id.clone(), "NULL".into()),
+                InstructionResult::ok(id.clone()),
+                InstructionResult::string(id.clone(), "Value".into()),
+                InstructionResult::void(id.clone()),
+                InstructionResult::ok(id.clone()),
+                InstructionResult::string(id.clone(), "Value".into()),
+                InstructionResult::list(
+                    id.clone(),
+                    vec![
+                        InstructionResultValue::String("Value1".into()),
+                        InstructionResultValue::String("Value2".into()),
+                    ],
+                ),
             ],
         )?;
         assert!(result.is_empty());
@@ -246,115 +205,153 @@ mod test {
             "test_file.md",
             vec![
                 (
-                    ExpectedResult::NullOrVoid {
-                        id: id_1.clone(),
-                        method_name: method_name.clone(),
-                        position: position.clone(),
-                    },
+                    ExpectedResult::null_or_void(
+                        id_1.clone(),
+                        position.clone(),
+                        method_name.clone(),
+                    ),
                     Snooze::not_snooze(),
                 ),
                 (
-                    ExpectedResult::NullOrVoid {
-                        id: id_1.clone(),
-                        method_name: method_name.clone(),
-                        position: position.clone(),
-                    },
+                    ExpectedResult::null_or_void(
+                        id_1.clone(),
+                        position.clone(),
+                        method_name.clone(),
+                    ),
                     Snooze::not_snooze(),
                 ),
                 (
-                    ExpectedResult::NullOrVoid {
-                        id: id_1.clone(),
-                        method_name: method_name.clone(),
-                        position: position.clone(),
-                    },
+                    ExpectedResult::null_or_void(
+                        id_1.clone(),
+                        position.clone(),
+                        method_name.clone(),
+                    ),
                     Snooze::not_snooze(),
                 ),
                 (
-                    ExpectedResult::Ok {
-                        id: id_1.clone(),
-                        position: position.clone(),
-                    },
+                    ExpectedResult::ok(id_1.clone(), position.clone()),
                     Snooze::not_snooze(),
                 ),
                 (
-                    ExpectedResult::Ok {
-                        id: id_1.clone(),
-                        position: position.clone(),
-                    },
+                    ExpectedResult::ok(id_1.clone(), position.clone()),
                     Snooze::not_snooze(),
                 ),
                 (
-                    ExpectedResult::Ok {
-                        id: id_1.clone(),
-                        position: position.clone(),
-                    },
+                    ExpectedResult::ok(id_1.clone(), position.clone()),
                     Snooze::not_snooze(),
                 ),
                 (
-                    ExpectedResult::String {
-                        id: id_1.clone(),
-                        value: "Value".into(),
-                        method_name: method_name.clone(),
-                        position: position.clone(),
-                    },
+                    ExpectedResult::string(
+                        id_1.clone(),
+                        position.clone(),
+                        method_name.clone(),
+                        "Value".into(),
+                    ),
                     Snooze::not_snooze(),
                 ),
                 (
-                    ExpectedResult::String {
-                        id: id_1.clone(),
-                        value: "Value".into(),
-                        method_name: method_name.clone(),
-                        position: position.clone(),
-                    },
+                    ExpectedResult::string(
+                        id_1.clone(),
+                        position.clone(),
+                        method_name.clone(),
+                        "Value".into(),
+                    ),
                     Snooze::not_snooze(),
                 ),
                 (
-                    ExpectedResult::String {
-                        id: id_1.clone(),
-                        value: "Value".into(),
-                        method_name: method_name.clone(),
-                        position: position.clone(),
-                    },
+                    ExpectedResult::string(
+                        id_1.clone(),
+                        position.clone(),
+                        method_name.clone(),
+                        "Value".into(),
+                    ),
                     Snooze::not_snooze(),
                 ),
                 (
-                    ExpectedResult::String {
-                        id: id_1.clone(),
-                        value: "Value".into(),
-                        method_name: method_name.clone(),
-                        position: position.clone(),
-                    },
+                    ExpectedResult::string(
+                        id_1.clone(),
+                        position.clone(),
+                        method_name.clone(),
+                        "Value".into(),
+                    ),
                     Snooze::not_snooze(),
                 ),
                 (
-                    ExpectedResult::Any { id: id_1.clone() },
+                    ExpectedResult::any(id_1.clone(), position.clone()),
+                    Snooze::not_snooze(),
+                ),
+                (
+                    ExpectedResult::list(
+                        id_1.clone(),
+                        position.clone(),
+                        method_name.clone(),
+                        vec![],
+                    ),
+                    Snooze::not_snooze(),
+                ),
+                (
+                    ExpectedResult::list(
+                        id_1.clone(),
+                        position.clone(),
+                        method_name.clone(),
+                        vec![],
+                    ),
+                    Snooze::not_snooze(),
+                ),
+                (
+                    ExpectedResult::list(
+                        id_1.clone(),
+                        position.clone(),
+                        method_name.clone(),
+                        vec![],
+                    ),
+                    Snooze::not_snooze(),
+                ),
+                (
+                    ExpectedResult::list(
+                        id_1.clone(),
+                        position.clone(),
+                        method_name.clone(),
+                        vec![],
+                    ),
+                    Snooze::not_snooze(),
+                ),
+                (
+                    ExpectedResult::list(
+                        id_1.clone(),
+                        position.clone(),
+                        method_name.clone(),
+                        vec![
+                            ExpectedResultValue::String("Value1".into()),
+                            ExpectedResultValue::String("Value2".into()),
+                        ],
+                    ),
                     Snooze::not_snooze(),
                 ),
             ],
             vec![
-                InstructionResult::Void { id: id_2.clone() },
-                InstructionResult::Ok { id: id_1.clone() },
-                InstructionResult::String {
-                    id: id_1.clone(),
-                    value: "Value".into(),
-                },
-                InstructionResult::Void { id: id_1.clone() },
-                InstructionResult::Ok { id: id_2.clone() },
-                InstructionResult::String {
-                    id: id_1.clone(),
-                    value: "Value".into(),
-                },
-                InstructionResult::Void { id: id_1.clone() },
-                InstructionResult::Ok { id: id_1.clone() },
-                InstructionResult::String {
-                    id: id_2.clone(),
-                    value: "Value".into(),
-                },
-                InstructionResult::String {
-                    id: id_1.clone(),
-                    value: "WrongValue".into(),
-                },
-                InstructionResult::Void { id: id_2.clone() },
+                InstructionResult::void(id_2.clone()),
+                InstructionResult::ok(id_1.clone()),
+                InstructionResult::string(id_1.clone(), "Value".into()),
+                InstructionResult::void(id_1.clone()),
+                InstructionResult::ok(id_2.clone()),
+                InstructionResult::string(id_1.clone(), "Value".into()),
+                InstructionResult::void(id_1.clone()),
+                InstructionResult::ok(id_1.clone()),
+                InstructionResult::string(id_2.clone(), "Value".into()),
+                InstructionResult::string(id_1.clone(), "WrongValue".into()),
+                InstructionResult::void(id_2.clone()),
+                InstructionResult::list(id_2.clone(), vec![]),
+                InstructionResult::void(id_1.clone()),
+                InstructionResult::ok(id_1.clone()),
+                InstructionResult::string(id_1.clone(), "Value".into()),
+                InstructionResult::list(
+                    id_1.clone(),
+                    vec![
+                        InstructionResultValue::String("Value2".into()),
+                        InstructionResultValue::String("Value1".into()),
+                    ],
+                ),
             ],
         )?;
         assert_eq!(
@@ -384,6 +381,19 @@ mod test {
                     "Expected `Value`, got `WrongValue` in test_file.md:{position} for method call TestMethod"
                 ), Snooze::not_snooze()),
                 (format!("Different ID in response. Expected {id_1} but got {id_2}",), Snooze::not_snooze()),
+                (format!("Different ID in response. Expected {id_1} but got {id_2}",), Snooze::not_snooze()),
+                (format!(
+                    "Expected [], got VOID in test_file.md:{position} for method call TestMethod"
+                ), Snooze::not_snooze()),
+                (format!(
+                    "Expected [], got OK in test_file.md:{position} for method call TestMethod"
+                ), Snooze::not_snooze()),
+                (format!(
+                    "Expected [], got `Value` in test_file.md:{position} for method call TestMethod"
+                ), Snooze::not_snooze()),
+                (format!(
+                    "Expected [`Value1`,`Value2`], got [`Value2`,`Value1`] in test_file.md:{position} for method call TestMethod"
+                ), Snooze::not_snooze()),
             ],
             result
         );
