@@ -205,13 +205,13 @@ trait ReadChar {
         Ok(buffer)
     }
     fn read_expected_char(&mut self, expected_char: char) -> Result<(), std::io::Error> {
-        let byte = self.read_char()?;
-        if byte == expected_char {
+        let char = self.read_char()?;
+        if char == expected_char {
             Ok(())
         } else {
             Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "Expected {expected_byte} but got {byte}",
+                format!("Expected {expected_char} but got {char}"),
             ))
         }
     }
@@ -305,6 +305,15 @@ mod test {
                 "000041:[000002:000008:Element1:000008:Element2:]"
             ))?
         );
+        Ok(())
+    }
+
+    #[test]
+    fn read_with_incorrect_values() -> Result<(), Box<dyn Error>> {
+        let err = Vec::<String>::from_reader(&mut Cursor::new("000009:[000000:A]"))
+            .expect_err("Expected error")
+            .to_string();
+        assert_eq!("Expected ] but got A", err);
         Ok(())
     }
 
