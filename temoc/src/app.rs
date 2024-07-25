@@ -97,7 +97,7 @@ impl App {
         let stderr = self.build_stdio();
         Ok(Command::new("sh")
             .arg("-c")
-            .arg(&self.command.replace("%p", &self.current_port.to_string()))
+            .arg(self.command.replace("%p", &self.current_port.to_string()))
             .stdout(stdout)
             .stderr(stderr)
             .spawn()?)
