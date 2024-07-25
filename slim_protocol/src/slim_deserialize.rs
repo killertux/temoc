@@ -1,4 +1,5 @@
 use std::io::{self, BufRead, Cursor};
+use read_char::read_next_char;
 use thiserror::Error;
 
 use crate::{ExceptionMessage, Instruction, InstructionResultValue};
@@ -22,9 +23,8 @@ pub trait FromSlimReader {
 impl FromSlimReader for String {
     fn from_reader(reader: &mut impl BufRead) -> Result<Self, FromSlimReaderError> {
         let len = read_len(reader)?;
-        let mut buffer = vec![0_u8; len];
-        reader.read_exact(&mut buffer)?;
-        Ok(String::from_utf8_lossy(&buffer).into_owned())
+        let string = reader.read_n_chars(len)?;
+        Ok(string)
     }
 }
 
@@ -47,13 +47,13 @@ where
     fn from_reader(reader: &mut impl BufRead) -> Result<Self, FromSlimReaderError> {
         let _ = read_len(reader)?; // TODO: Validate this len against the read bytes
         let mut result = Vec::new();
-        reader.read_expected_byte(b'[')?;
+        reader.read_expected_char('[')?;
         let n_elements = read_len(reader)?;
         for _ in 0..n_elements {
             result.push(T::from_reader(reader)?);
-            reader.read_expected_byte(b':')?;
+            reader.read_expected_char(':')?;
         }
-        reader.read_expected_byte(b']')?;
+        reader.read_expected_char(']')?;
         Ok(result)
     }
 }
@@ -171,20 +171,20 @@ impl FromSlimReader for ByeOrSlimInstructions {
         Self: Sized,
     {
         let _ = read_len(reader)?;
-        match reader.read_byte()? {
-            b'[' => {
+        match reader.read_char()? {
+            '[' => {
                 let mut result = Vec::new();
                 let n_elements = read_len(reader)?;
                 for _ in 0..n_elements {
                     result.push(Instruction::from_reader(reader)?);
-                    reader.read_expected_byte(b':')?;
+                    reader.read_expected_char(':')?;
                 }
-                reader.read_expected_byte(b']')?;
+                reader.read_expected_char(']')?;
                 Ok(ByeOrSlimInstructions::Instructions(result))
             }
-            b'b' => {
-                reader.read_expected_byte(b'y')?;
-                reader.read_expected_byte(b'e')?;
+            'b' => {
+                reader.read_expected_char('y')?;
+                reader.read_expected_char('e')?;
                 Ok(ByeOrSlimInstructions::Bye)
             }
             other => Err(FromSlimReaderError::Other(format!(
@@ -194,11 +194,19 @@ impl FromSlimReader for ByeOrSlimInstructions {
     }
 }
 
-trait ReadByte {
-    fn read_byte(&mut self) -> Result<u8, std::io::Error>;
-    fn read_expected_byte(&mut self, expected_byte: u8) -> Result<(), std::io::Error> {
-        let byte = self.read_byte()?;
-        if byte == expected_byte {
+trait ReadChar {
+    fn read_char(&mut self) -> Result<char, std::io::Error>;
+    fn read_n_chars(&mut self, n: usize) -> Result<String, std::io::Error> {
+        let mut buffer = String::new();
+        buffer.reserve(n);
+        for _ in 0..n {
+            buffer.push(self.read_char()?);
+        }
+        Ok(buffer)
+    }
+    fn read_expected_char(&mut self, expected_char: char) -> Result<(), std::io::Error> {
+        let byte = self.read_char()?;
+        if byte == expected_char {
             Ok(())
         } else {
             Err(std::io::Error::new(
@@ -209,14 +217,22 @@ trait ReadByte {
     }
 }
 
-impl<R> ReadByte for R
+impl<R> ReadChar for R
 where
     R: BufRead,
 {
-    fn read_byte(&mut self) -> Result<u8, std::io::Error> {
-        let mut buf = [0; 1];
-        self.read_exact(&mut buf)?;
-        Ok(buf[0])
+    fn read_char(&mut self) -> Result<char, std::io::Error> {
+        Ok(read_next_char(self).map_err(|err| match err {
+            read_char::Error::NotAnUtf8(_) => std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Non UTF-8 character",
+            ),
+            read_char::Error::Io(err) => err,
+            read_char::Error::EOF => std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "Unexpected end of stream",
+            ),
+        })?)
     }
 }
 
@@ -260,6 +276,15 @@ mod test {
         assert_eq!(
             String::from("Hello world"),
             String::from_reader(&mut Cursor::new("000011:Hello world"))?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn read_string_with_special_chars() -> Result<(), Box<dyn Error>> {
+        assert_eq!(
+            String::from("Tipo de evento inválido"),
+            String::from_reader(&mut Cursor::new("000023:Tipo de evento inválido"))?
         );
         Ok(())
     }

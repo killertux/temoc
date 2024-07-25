@@ -266,6 +266,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "maybe-uninit"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60302e4db3a61da70c0cb7991976248362f30319e88850c487b9b95bbf059e00"
+
+[[package]]
 name = "memchr"
 version = "2.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -341,6 +347,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "read_char"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f803565a87502a15ef665d375e341c657de382dbf11c0eddca6b15bb82329ab"
+dependencies = [
+ "smallvec",
+]
+
+[[package]]
 name = "rust_slim"
 version = "0.2.2"
 dependencies = [
@@ -394,8 +409,18 @@ dependencies = [
 name = "slim_protocol"
 version = "0.2.0"
 dependencies = [
+ "read_char",
  "thiserror",
  "ulid",
+]
+
+[[package]]
+name = "smallvec"
+version = "0.6.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b97fcaeba89edba30f044a10c6a3cc39df9c3f17d7cd829dd1446cab35f890e0"
+dependencies = [
+ "maybe-uninit",
 ]
 
 [[package]]
