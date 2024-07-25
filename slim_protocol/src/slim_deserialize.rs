@@ -1,5 +1,5 @@
-use std::io::{self, BufRead, Cursor};
 use read_char::read_next_char;
+use std::io::{self, BufRead, Cursor};
 use thiserror::Error;
 
 use crate::{ExceptionMessage, Instruction, InstructionResultValue};
@@ -222,17 +222,16 @@ where
     R: BufRead,
 {
     fn read_char(&mut self) -> Result<char, std::io::Error> {
-        Ok(read_next_char(self).map_err(|err| match err {
-            read_char::Error::NotAnUtf8(_) => std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Non UTF-8 character",
-            ),
+        read_next_char(self).map_err(|err| match err {
+            read_char::Error::NotAnUtf8(_) => {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "Non UTF-8 character")
+            }
             read_char::Error::Io(err) => err,
             read_char::Error::EOF => std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "Unexpected end of stream",
             ),
-        })?)
+        })
     }
 }
 

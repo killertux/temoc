@@ -116,6 +116,7 @@
 #[cfg(feature = "macros")]
 pub use rust_slim_macros::*;
 pub use server::SlimServer;
+use std::fmt::{Display, Formatter};
 pub use to_slim_result_string::*;
 pub use utils::from_rust_module_path_to_class_path;
 
@@ -177,16 +178,16 @@ pub enum ExecuteMethodError {
     ExecutionError(String),
 }
 
-impl ToString for ExecuteMethodError {
-    fn to_string(&self) -> String {
+impl Display for ExecuteMethodError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             ExecuteMethodError::MethodNotFound { method, class } => {
-                format!("NO_METHOD_IN_CLASS {method} {class}")
+                write!(f, "NO_METHOD_IN_CLASS {method} {class}")
             }
             ExecuteMethodError::ArgumentParsingError(argument) => {
-                format!("NO_CONVERTER_FOR_ARGUMENT_NUMBER {argument}")
+                write!(f, "NO_CONVERTER_FOR_ARGUMENT_NUMBER {argument}")
             }
-            ExecuteMethodError::ExecutionError(error) => error.to_string(),
+            ExecuteMethodError::ExecutionError(error) => f.write_str(error),
         }
     }
 }
