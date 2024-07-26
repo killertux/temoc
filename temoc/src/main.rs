@@ -33,8 +33,9 @@ struct Args {
     /// Pipe STDERR and STDOUT of the slim server through the STDOUT
     #[arg(short = 'o', long)]
     pipe_output: bool,
-    #[arg(short, long)]
-    filter_fixture: Option<String>,
+    /// Filter the decision tables by the fixture class. Accept any regex string
+    #[arg(short = 'f', long)]
+    class_filter: Option<String>,
     /// List of files to test
     files: Vec<PathBuf>,
 }
@@ -46,8 +47,8 @@ fn main() -> Result<()> {
     };
 
     let mut filter = Filter::new();
-    if let Some(fixture) = args.filter_fixture {
-        filter = filter.fixture(&fixture)?;
+    if let Some(fixture) = args.class_filter {
+        filter = filter.fixture_class(&fixture)?;
     }
 
     if App::new(

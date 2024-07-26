@@ -28,7 +28,7 @@ pub struct Filter {
 
 #[derive(Debug, Clone)]
 enum FilterType {
-    Fixture(Regex),
+    FixtureClass(Regex),
     Line(usize),
 }
 
@@ -37,8 +37,8 @@ impl Filter {
         Self { filters: vec![] }
     }
 
-    pub fn fixture(mut self, fixture: &str) -> Result<Self> {
-        self.filters.push(FilterType::Fixture(Regex::new(fixture)?));
+    pub fn fixture_class(mut self, fixture: &str) -> Result<Self> {
+        self.filters.push(FilterType::FixtureClass(Regex::new(fixture)?));
         Ok(self)
     }
 
@@ -52,7 +52,7 @@ impl Filter {
             .into_iter()
             .filter(|command| {
                 self.filters.iter().all(|filter| match filter {
-                    FilterType::Fixture(regex) => match command {
+                    FilterType::FixtureClass(regex) => match command {
                         MarkdownCommand::DecisionTable { class, .. } => regex.is_match(&class.0),
                         MarkdownCommand::Import { .. } => true,
                     },
@@ -130,7 +130,7 @@ mod test {
 
     #[test]
     fn test_filter() -> Result<()> {
-        let filter = Filter::new().fixture("Calculator")?;
+        let filter = Filter::new().fixture_class("Calculator")?;
         let commands = vec![
             MarkdownCommand::DecisionTable {
                 class: Class("Calculator".into(), Position::new(1, 1)),
