@@ -76,6 +76,9 @@ pub fn process_markdown_into_instructions(
     print!("Testing file {}...", file_path_display);
     let markdown = parse_markdown(file_path)?;
     let commands = filter.apply(get_commands_from_markdown(markdown, file_path_display)?);
+    if !commands.iter().any(|command| matches!(command, MarkdownCommand::DecisionTable {..})) {
+        return Ok((vec![], vec![]));
+    }
     get_instructions_from_commands(commands)
 }
 
