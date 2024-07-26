@@ -1,4 +1,5 @@
 use crate::app::{get_list_of_files, App};
+use crate::processor::Filter;
 use anyhow::{anyhow, bail, Result};
 use clap::Parser;
 use std::{fs::read_to_string, path::PathBuf};
@@ -32,6 +33,8 @@ struct Args {
     /// Pipe STDERR and STDOUT of the slim server through the STDOUT
     #[arg(short = 'o', long)]
     pipe_output: bool,
+    #[arg(short, long)]
+    filter_fixture: Option<String>,
     /// List of files to test
     files: Vec<PathBuf>,
 }
@@ -42,6 +45,11 @@ fn main() -> Result<()> {
         bail!("You need to provide a command to start the slim server")
     };
 
+    let mut filter = Filter::new();
+    if let Some(fixture) = args.filter_fixture {
+        filter = filter.fixture(&fixture)?;
+    }
+
     if App::new(
         command,
         args.show_snoozed,
@@ -49,6 +57,7 @@ fn main() -> Result<()> {
         args.port.unwrap_or(8085),
         args.pool_size.unwrap_or(10),
         args.recursive,
+        filter,
         args.files,
     )
     .run()?

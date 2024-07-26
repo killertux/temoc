@@ -1,8 +1,11 @@
-use crate::processor::{execute_instructions_and_print_result, process_markdown_into_instructions};
+use crate::processor::{
+    execute_instructions_and_print_result, process_markdown_into_instructions, Filter,
+};
 use anyhow::{bail, Result};
 use slim_protocol::SlimConnection;
 use std::fs::{metadata, read_dir};
 use std::net::TcpStream;
+use std::num::ParseIntError;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
@@ -16,10 +19,12 @@ pub struct App {
     current_port: u16,
     pool_size: u8,
     recursive: bool,
+    filter: Filter,
     paths: Vec<PathBuf>,
 }
 
 impl App {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         command: String,
         show_snoozed: bool,
@@ -27,6 +32,7 @@ impl App {
         base_port: u16,
         pool_size: u8,
         recursive: bool,
+        filter: Filter,
         paths: Vec<PathBuf>,
     ) -> Self {
         App {
@@ -37,6 +43,7 @@ impl App {
             current_port: base_port,
             pool_size,
             recursive,
+            filter,
             paths,
         }
     }
@@ -54,14 +61,40 @@ impl App {
     }
 
     pub fn process_path(&mut self, path: impl AsRef<Path>) -> Result<bool> {
+        let mut path = path.as_ref().to_path_buf();
+        let mut filter = self.filter.clone();
+        if let Ok(line) = Self::get_line_from_path(&path) {
+            if let Some(remaining) = path
+                .to_string_lossy()
+                .strip_suffix(&format!(":{line}"))
+            {
+                path = PathBuf::from(remaining);
+                filter = filter.line(line);
+            }
+        }
         let metadata = metadata(&path)?;
         if metadata.is_dir() && self.recursive {
             return self.process_paths(get_list_of_files(&path)?);
         }
         if metadata.is_file() && Self::is_markdown_format(&path) {
-            return self.process_file(&path);
+            return self.process_file(&path, filter);
         }
         Ok(false)
+    }
+
+    fn get_line_from_path(path: &impl AsRef<Path>) -> Result<usize, ParseIntError> {
+        let line = path
+            .as_ref()
+            .display()
+            .to_string()
+            .chars()
+            .rev()
+            .take_while(|c| c.is_numeric())
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect::<String>();
+        line.parse::<usize>()
     }
 
     fn is_markdown_format(path: impl AsRef<Path>) -> bool {
@@ -71,8 +104,8 @@ impl App {
             .unwrap_or(false)
     }
 
-    fn process_file(&mut self, file: impl AsRef<Path>) -> Result<bool> {
-        let (instructions, expected_result) = process_markdown_into_instructions(&file)?;
+    fn process_file(&mut self, file: impl AsRef<Path>, filter: Filter) -> Result<bool> {
+        let (instructions, expected_result) = process_markdown_into_instructions(&file, &filter)?;
         if instructions.is_empty() {
             println!("NONE");
             return Ok(false);

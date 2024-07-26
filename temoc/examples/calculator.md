@@ -8,7 +8,7 @@ So, in this calculator we can sum values like this:
 [//]: # "decisionTable CalculatorFixture"
 
 | a   | b   | sum? |
-| --- | --- | ---- |
+| --- | --- |------|
 | 1   | 2   | 3    |
 | 2   | 2   | 4    |
 | 10  | 5   | 15   |
@@ -19,7 +19,7 @@ We can also multiply numbers and have commentary columns:
 [//]: # "decisionTable CalculatorFixture"
 
 | a   | b   | # comment  | mul? |
-| --- | --- | ---------- | ---- |
+| --- | --- | ---------- |------|
 | 1   | 2   | This is a  | 2    |
 | 2   | 2   | Commentary | 4    |
 | 10  | 5   | It should  | 50   |
