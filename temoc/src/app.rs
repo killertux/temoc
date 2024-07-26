@@ -64,10 +64,7 @@ impl App {
         let mut path = path.as_ref().to_path_buf();
         let mut filter = self.filter.clone();
         if let Ok(line) = Self::get_line_from_path(&path) {
-            if let Some(remaining) = path
-                .to_string_lossy()
-                .strip_suffix(&format!(":{line}"))
-            {
+            if let Some(remaining) = path.to_string_lossy().strip_suffix(&format!(":{line}")) {
                 path = PathBuf::from(remaining);
                 filter = filter.line(line);
             }

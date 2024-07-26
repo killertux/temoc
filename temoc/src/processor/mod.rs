@@ -38,7 +38,8 @@ impl Filter {
     }
 
     pub fn fixture_class(mut self, fixture: &str) -> Result<Self> {
-        self.filters.push(FilterType::FixtureClass(Regex::new(fixture)?));
+        self.filters
+            .push(FilterType::FixtureClass(Regex::new(fixture)?));
         Ok(self)
     }
 
