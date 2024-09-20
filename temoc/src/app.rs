@@ -19,6 +19,7 @@ pub struct App {
     current_port: u16,
     pool_size: u8,
     recursive: bool,
+    extension: String,
     filter: Filter,
     paths: Vec<PathBuf>,
 }
@@ -33,6 +34,7 @@ impl App {
         pool_size: u8,
         recursive: bool,
         filter: Filter,
+        extension: String,
         paths: Vec<PathBuf>,
     ) -> Self {
         App {
@@ -43,6 +45,7 @@ impl App {
             current_port: base_port,
             pool_size,
             recursive,
+            extension,
             filter,
             paths,
         }
@@ -73,7 +76,7 @@ impl App {
         if metadata.is_dir() && self.recursive {
             return self.process_paths(get_list_of_files(&path)?);
         }
-        if metadata.is_file() && Self::is_markdown_format(&path) {
+        if metadata.is_file() && self.is_correct_extension(&path) {
             return self.process_file(&path, filter);
         }
         Ok(false)
@@ -94,11 +97,8 @@ impl App {
         line.parse::<usize>()
     }
 
-    fn is_markdown_format(path: impl AsRef<Path>) -> bool {
-        path.as_ref()
-            .extension()
-            .map(|ext| ext.to_ascii_lowercase() == "md")
-            .unwrap_or(false)
+    fn is_correct_extension(&self, path: impl AsRef<Path>) -> bool {
+        path.as_ref().to_string_lossy().to_lowercase().ends_with(&self.extension)
     }
 
     fn process_file(&mut self, file: impl AsRef<Path>, filter: Filter) -> Result<bool> {

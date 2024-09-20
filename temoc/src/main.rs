@@ -33,6 +33,9 @@ struct Args {
     /// Pipe STDERR and STDOUT of the slim server through the STDOUT
     #[arg(short = 'o', long)]
     pipe_output: bool,
+    /// Extension to filter markdown files. Default is md. Not case sensitive
+    #[arg(short, long)]
+    extension: Option<String>,
     /// Filter the decision tables by the fixture class. Accept any regex string
     #[arg(short = 'f', long)]
     class_filter: Option<String>,
@@ -59,6 +62,7 @@ fn main() -> Result<()> {
         args.pool_size.unwrap_or(10),
         args.recursive,
         filter,
+        args.extension.unwrap_or("md".to_string()).to_lowercase(),
         args.files,
     )
     .run()?
@@ -110,6 +114,14 @@ fn append_config_to_args(mut args: Args) -> Result<Args> {
             args.execute_server_command = args.execute_server_command.or(config_file
                 .get("execute_server_command")
                 .map(|command| {
+                    command
+                        .as_str()
+                        .expect("Expect the slim server command to be a string")
+                        .to_string()
+                }));
+            args.extension = args
+                .extension
+                .or(config_file.get("extension").map(|command| {
                     command
                         .as_str()
                         .expect("Expect the slim server command to be a string")

@@ -55,6 +55,16 @@ impl PartialEq<InstructionResultValue> for ExpectedResultValue {
                 true
             }
             (ExpectedResultValue::Ok, InstructionResultValue::Ok) => true,
+            (ExpectedResultValue::String(expected_value), InstructionResultValue::Ok)
+                if expected_value == "OK" =>
+            {
+                true
+            }
+            (ExpectedResultValue::String(expected_value), InstructionResultValue::Void)
+                if expected_value == "VOID" =>
+            {
+                true
+            }
             (
                 ExpectedResultValue::String(expected_value),
                 InstructionResultValue::String(actual_value),
@@ -173,6 +183,24 @@ mod test {
                     ),
                     Snooze::not_snooze(),
                 ),
+                (
+                    ExpectedResult::string(
+                        id.clone(),
+                        position.clone(),
+                        method_name.clone(),
+                        "OK".into(),
+                    ),
+                    Snooze::not_snooze(),
+                ),
+                (
+                    ExpectedResult::string(
+                        id.clone(),
+                        position.clone(),
+                        method_name.clone(),
+                        "VOID".into(),
+                    ),
+                    Snooze::not_snooze(),
+                ),
             ],
             vec![
                 InstructionResult::void(id.clone()),
@@ -189,6 +217,8 @@ mod test {
                         InstructionResultValue::String("Value2".into()),
                     ],
                 ),
+                InstructionResult::ok(id.clone()),
+                InstructionResult::void(id.clone()),
             ],
         )?;
         assert!(result.is_empty());

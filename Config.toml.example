@@ -6,6 +6,8 @@ port = 8085
 pool_size = 10
 # Dir with markdown files to be tested
 test_dir = "temoc/examples/"
+# File extensions to filter for markdowns. Default is "md". Not case sensitive
+extension = "md"
 # If we should traverse the test dir recursively
 recursive = true
 # Show snoozed errors
