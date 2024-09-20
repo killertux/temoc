@@ -98,7 +98,10 @@ impl App {
     }
 
     fn is_correct_extension(&self, path: impl AsRef<Path>) -> bool {
-        path.as_ref().to_string_lossy().to_lowercase().ends_with(&self.extension)
+        path.as_ref()
+            .to_string_lossy()
+            .to_lowercase()
+            .ends_with(&self.extension)
     }
 
     fn process_file(&mut self, file: impl AsRef<Path>, filter: Filter) -> Result<bool> {
