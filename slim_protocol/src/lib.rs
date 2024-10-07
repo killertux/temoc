@@ -288,6 +288,10 @@ impl ExceptionMessage {
             Ok(&self.0)
         }
     }
+
+    pub fn is_no_method_in_class(&self) -> bool {
+        self.0.contains("NO_METHOD_IN_CLASS")
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]

@@ -48,7 +48,7 @@ pub fn get_instructions_from_commands(
                     args: Vec::new(),
                 });
                 expected_result.push((
-                    ExpectedResult::null_or_void(id, position.clone(), None),
+                    ExpectedResult::null_or_void_or_method_not_found(id, position.clone(), None),
                     snoozed.clone(),
                 ));
                 for row in table.into_iter() {
@@ -60,7 +60,11 @@ pub fn get_instructions_from_commands(
                         args: Vec::new(),
                     });
                     expected_result.push((
-                        ExpectedResult::null_or_void(id, row.position.clone(), None),
+                        ExpectedResult::null_or_void_or_method_not_found(
+                            id,
+                            row.position.clone(),
+                            None,
+                        ),
                         snoozed.clone(),
                     ));
                     match r#type {
@@ -86,7 +90,11 @@ pub fn get_instructions_from_commands(
                                 args: Vec::new(),
                             });
                             expected_result.push((
-                                ExpectedResult::null_or_void(id, row.position.clone(), None),
+                                ExpectedResult::null_or_void_or_method_not_found(
+                                    id,
+                                    row.position.clone(),
+                                    None,
+                                ),
                                 snoozed.clone(),
                             ));
                             for (getter_name, Value(value, position)) in row.getters.into_iter() {
@@ -132,7 +140,10 @@ pub fn get_instructions_from_commands(
                     function: "endTable".into(),
                     args: Vec::new(),
                 });
-                expected_result.push((ExpectedResult::null_or_void(id, position, None), snoozed));
+                expected_result.push((
+                    ExpectedResult::null_or_void_or_method_not_found(id, position, None),
+                    snoozed,
+                ));
             }
         }
     }
@@ -176,6 +187,19 @@ impl ExpectedResult {
         }
     }
 
+    pub fn null_or_void_or_method_not_found(
+        id: Id,
+        position: Position,
+        method_name: Option<MethodName>,
+    ) -> Self {
+        Self {
+            id,
+            position,
+            method_name,
+            value: ExpectedResultValue::NullOrVoidOrMethodNotFound,
+        }
+    }
+
     pub fn string(id: Id, position: Position, method_name: MethodName, value: String) -> Self {
         Self {
             id,
@@ -206,6 +230,7 @@ pub enum ExpectedResultValue {
     Any,
     Ok,
     NullOrVoid,
+    NullOrVoidOrMethodNotFound,
     String(String),
     List(Vec<ExpectedResultValue>),
 }
@@ -216,6 +241,9 @@ impl Display for ExpectedResultValue {
             #[cfg(test)]
             ExpectedResultValue::Any => write!(f, "ANY"),
             ExpectedResultValue::NullOrVoid => write!(f, "NULL or VOID"),
+            ExpectedResultValue::NullOrVoidOrMethodNotFound => {
+                write!(f, "NULL or VOID or NOT FOUND")
+            }
             ExpectedResultValue::Ok => write!(f, "OK"),
             ExpectedResultValue::String(value) => write!(f, "`{}`", value),
             ExpectedResultValue::List(value) => {
@@ -352,7 +380,7 @@ mod test {
                     id: _,
                     position: _,
                     method_name: None,
-                    value: ExpectedResultValue::NullOrVoid
+                    value: ExpectedResultValue::NullOrVoidOrMethodNotFound
                 },
                 _
             )
@@ -373,7 +401,7 @@ mod test {
                     id: _,
                     position: _,
                     method_name: None,
-                    value: ExpectedResultValue::NullOrVoid
+                    value: ExpectedResultValue::NullOrVoidOrMethodNotFound
                 },
                 _
             )
@@ -420,7 +448,7 @@ mod test {
                     id: _,
                     position: _,
                     method_name: None,
-                    value: ExpectedResultValue::NullOrVoid
+                    value: ExpectedResultValue::NullOrVoidOrMethodNotFound
                 },
                 _
             )
@@ -479,7 +507,7 @@ mod test {
                     id: _,
                     position: _,
                     method_name: None,
-                    value: ExpectedResultValue::NullOrVoid
+                    value: ExpectedResultValue::NullOrVoidOrMethodNotFound
                 },
                 _
             )
@@ -526,7 +554,7 @@ mod test {
                     id: _,
                     position: _,
                     method_name: None,
-                    value: ExpectedResultValue::NullOrVoid
+                    value: ExpectedResultValue::NullOrVoidOrMethodNotFound
                 },
                 _
             )
@@ -583,7 +611,7 @@ mod test {
                     id: _,
                     position: _,
                     method_name: None,
-                    value: ExpectedResultValue::NullOrVoid
+                    value: ExpectedResultValue::NullOrVoidOrMethodNotFound
                 },
                 _
             )
@@ -638,7 +666,7 @@ mod test {
         ));
         assert!(matches!(
             expected_result.remove(0),
-            (ExpectedResult { id: _, position:_, method_name: None, value: ExpectedResultValue::NullOrVoid }, snooze) if snooze.should_snooze()
+            (ExpectedResult { id: _, position:_, method_name: None, value: ExpectedResultValue::NullOrVoidOrMethodNotFound }, snooze) if snooze.should_snooze()
         ));
         assert!(matches!(
             instructions.remove(0),
@@ -651,7 +679,7 @@ mod test {
         ));
         assert!(matches!(
             expected_result.remove(0),
-            (ExpectedResult { id: _, position:_, method_name: None, value: ExpectedResultValue::NullOrVoid }, snooze) if snooze.should_snooze()
+            (ExpectedResult { id: _, position:_, method_name: None, value: ExpectedResultValue::NullOrVoidOrMethodNotFound }, snooze) if snooze.should_snooze()
         ));
         assert!(matches!(
             instructions.remove(0),
@@ -677,7 +705,7 @@ mod test {
         ));
         assert!(matches!(
             expected_result.remove(0),
-            (ExpectedResult { id: _, position:_, method_name: None, value: ExpectedResultValue::NullOrVoid }, snooze) if snooze.should_snooze()
+            (ExpectedResult { id: _, position:_, method_name: None, value: ExpectedResultValue::NullOrVoidOrMethodNotFound }, snooze) if snooze.should_snooze()
         ));
         assert!(matches!(
             &instructions.remove(0),
@@ -708,7 +736,7 @@ mod test {
         ));
         assert!(matches!(
             expected_result.remove(0),
-            (ExpectedResult { id: _, position:_, method_name: None, value: ExpectedResultValue::NullOrVoid }, snooze) if snooze.should_snooze()
+            (ExpectedResult { id: _, position:_, method_name: None, value: ExpectedResultValue::NullOrVoidOrMethodNotFound }, snooze) if snooze.should_snooze()
         ));
         Ok(())
     }
@@ -806,7 +834,7 @@ mod test {
                     id: _,
                     position: _,
                     method_name: None,
-                    value: ExpectedResultValue::NullOrVoid
+                    value: ExpectedResultValue::NullOrVoidOrMethodNotFound
                 },
                 _
             )
@@ -827,7 +855,7 @@ mod test {
                     id: _,
                     position: _,
                     method_name: None,
-                    value: ExpectedResultValue::NullOrVoid
+                    value: ExpectedResultValue::NullOrVoidOrMethodNotFound
                 },
                 _
             )
@@ -864,7 +892,7 @@ mod test {
                     id: _,
                     position: _,
                     method_name: None,
-                    value: ExpectedResultValue::NullOrVoid
+                    value: ExpectedResultValue::NullOrVoidOrMethodNotFound
                 },
                 _
             )
@@ -902,7 +930,7 @@ mod test {
                     id: _,
                     position: _,
                     method_name: None,
-                    value: ExpectedResultValue::NullOrVoid
+                    value: ExpectedResultValue::NullOrVoidOrMethodNotFound
                 },
                 _
             )

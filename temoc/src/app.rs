@@ -44,7 +44,7 @@ impl App {
             show_snoozed,
             pipe_output,
             base_port,
-            current_port: rng.gen_range(base_port..(base_port + pool_size as u16)),
+            current_port: rng.gen_range(base_port..(base_port + (pool_size - 1) as u16)),
             pool_size,
             recursive,
             extension,

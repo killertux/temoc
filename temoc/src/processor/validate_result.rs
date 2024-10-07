@@ -49,6 +49,15 @@ impl PartialEq<InstructionResultValue> for ExpectedResultValue {
         match (self, other) {
             #[cfg(test)]
             (ExpectedResultValue::Any, _) => true,
+            (ExpectedResultValue::NullOrVoidOrMethodNotFound, InstructionResultValue::Void) => true,
+            (
+                ExpectedResultValue::NullOrVoidOrMethodNotFound,
+                InstructionResultValue::Exception(message),
+            ) if message.is_no_method_in_class() => true,
+            (
+                ExpectedResultValue::NullOrVoidOrMethodNotFound,
+                InstructionResultValue::String(value),
+            ) if value.to_lowercase() == "null" => true,
             (ExpectedResultValue::NullOrVoid, InstructionResultValue::Void) => true,
             (ExpectedResultValue::NullOrVoid, InstructionResultValue::String(value))
                 if value.to_lowercase() == "null" =>
@@ -100,6 +109,7 @@ fn failure_expected_result_detail_message(
         ExpectedResultValue::Any => "".into(),
         ExpectedResultValue::Ok => format!("in {file_path}:{position}"),
         ExpectedResultValue::NullOrVoid
+        | ExpectedResultValue::NullOrVoidOrMethodNotFound
         | ExpectedResultValue::String(_)
         | ExpectedResultValue::List(_) => match method_name {
             Some(method_name) => format!(
@@ -114,7 +124,7 @@ fn failure_expected_result_detail_message(
 #[cfg(test)]
 mod test {
     use crate::processor::markdown_commands::{MethodName, Position};
-    use slim_protocol::Id;
+    use slim_protocol::{ExceptionMessage, Id};
 
     use super::*;
 
@@ -140,6 +150,30 @@ mod test {
         let result = validate_result(
             "test_path.md",
             vec![
+                (
+                    ExpectedResult::null_or_void_or_method_not_found(
+                        id.clone(),
+                        position.clone(),
+                        None,
+                    ),
+                    Snooze::not_snooze(),
+                ),
+                (
+                    ExpectedResult::null_or_void_or_method_not_found(
+                        id.clone(),
+                        position.clone(),
+                        None,
+                    ),
+                    Snooze::not_snooze(),
+                ),
+                (
+                    ExpectedResult::null_or_void_or_method_not_found(
+                        id.clone(),
+                        position.clone(),
+                        None,
+                    ),
+                    Snooze::not_snooze(),
+                ),
                 (
                     ExpectedResult::null_or_void(
                         id.clone(),
@@ -214,6 +248,14 @@ mod test {
             ],
             vec![
                 InstructionResult::void(id.clone()),
+                InstructionResult::exception(
+                    id.clone(),
+                    ExceptionMessage::new(
+                        "NO_METHOD_IN_CLASS reset Calculator.Fixtures.CalculatorFixture".into(),
+                    ),
+                ),
+                InstructionResult::string(id.clone(), "NULL".into()),
+                InstructionResult::void(id.clone()),
                 InstructionResult::string(id.clone(), "NULL".into()),
                 InstructionResult::ok(id.clone()),
                 InstructionResult::string(id.clone(), "Value".into()),
@@ -244,6 +286,22 @@ mod test {
         let result = validate_result(
             "test_file.md",
             vec![
+                (
+                    ExpectedResult::null_or_void_or_method_not_found(
+                        id_1.clone(),
+                        position.clone(),
+                        Some(method_name.clone()),
+                    ),
+                    Snooze::not_snooze(),
+                ),
+                (
+                    ExpectedResult::null_or_void_or_method_not_found(
+                        id_1.clone(),
+                        position.clone(),
+                        None,
+                    ),
+                    Snooze::not_snooze(),
+                ),
                 (
                     ExpectedResult::null_or_void(
                         id_1.clone(),
@@ -372,6 +430,8 @@ mod test {
             vec![
                 InstructionResult::void(id_2.clone()),
                 InstructionResult::ok(id_1.clone()),
+                InstructionResult::void(id_2.clone()),
+                InstructionResult::ok(id_1.clone()),
                 InstructionResult::string(id_1.clone(), "Value".into()),
                 InstructionResult::void(id_1.clone()),
                 InstructionResult::ok(id_2.clone()),
@@ -396,6 +456,8 @@ mod test {
         )?;
         assert_eq!(
             vec![
+                (format!("Different ID in response. Expected {id_1} but got {id_2}",), Snooze::not_snooze()),
+                (format!("Expected NULL or VOID or NOT FOUND, got OK in test_file.md:0:0",), Snooze::not_snooze()),
                 (format!("Different ID in response. Expected {id_1} but got {id_2}",), Snooze::not_snooze()),
                 (format!(
                     "Expected NULL or VOID, got OK in test_file.md:{position} for method call TestMethod"
