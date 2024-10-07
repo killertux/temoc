@@ -18,7 +18,7 @@ struct Args {
     /// Base port to connect to the slim server. Default is 8085
     #[arg(short, long)]
     port: Option<u16>,
-    /// The size of the pool of ports to cycle through. Default is 10 (8085 - 8095)
+    /// The size of the pool of ports to cycle through. Default is 20 (8085 - 8105)
     #[arg(short = 'l', long)]
     pool_size: Option<u8>,
     /// Command to start the slim server
@@ -59,7 +59,7 @@ fn main() -> Result<()> {
         args.show_snoozed,
         args.pipe_output,
         args.port.unwrap_or(8085),
-        args.pool_size.unwrap_or(10),
+        args.pool_size.unwrap_or(20),
         args.recursive,
         filter,
         args.extension.unwrap_or("md".to_string()).to_lowercase(),

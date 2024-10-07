@@ -2,6 +2,7 @@ use crate::processor::{
     execute_instructions_and_print_result, process_markdown_into_instructions, Filter,
 };
 use anyhow::{bail, Result};
+use rand::Rng;
 use slim_protocol::SlimConnection;
 use std::fs::{metadata, read_dir};
 use std::net::TcpStream;
@@ -37,12 +38,13 @@ impl App {
         extension: String,
         paths: Vec<PathBuf>,
     ) -> Self {
+        let mut rng = rand::thread_rng();
         App {
             command,
             show_snoozed,
             pipe_output,
             base_port,
-            current_port: base_port,
+            current_port: rng.gen_range(base_port..(base_port + pool_size as u16)),
             pool_size,
             recursive,
             extension,

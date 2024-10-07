@@ -480,13 +480,14 @@ dependencies = [
 
 [[package]]
 name = "temoc"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "chrono",
  "clap",
  "convert_case",
  "markdown",
+ "rand",
  "regex",
  "rust_slim",
  "slim_protocol",
