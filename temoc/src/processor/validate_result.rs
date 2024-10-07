@@ -139,11 +139,19 @@ mod test {
             "test_path.md",
             vec![
                 (
-                    ExpectedResult::null_or_void(id.clone(), position.clone(), method_name.clone()),
+                    ExpectedResult::null_or_void(
+                        id.clone(),
+                        position.clone(),
+                        Some(method_name.clone()),
+                    ),
                     Snooze::not_snooze(),
                 ),
                 (
-                    ExpectedResult::null_or_void(id.clone(), position.clone(), method_name.clone()),
+                    ExpectedResult::null_or_void(
+                        id.clone(),
+                        position.clone(),
+                        Some(method_name.clone()),
+                    ),
                     Snooze::not_snooze(),
                 ),
                 (
@@ -238,7 +246,7 @@ mod test {
                     ExpectedResult::null_or_void(
                         id_1.clone(),
                         position.clone(),
-                        method_name.clone(),
+                        Some(method_name.clone()),
                     ),
                     Snooze::not_snooze(),
                 ),
@@ -246,7 +254,7 @@ mod test {
                     ExpectedResult::null_or_void(
                         id_1.clone(),
                         position.clone(),
-                        method_name.clone(),
+                        Some(method_name.clone()),
                     ),
                     Snooze::not_snooze(),
                 ),
@@ -254,7 +262,7 @@ mod test {
                     ExpectedResult::null_or_void(
                         id_1.clone(),
                         position.clone(),
-                        method_name.clone(),
+                        Some(method_name.clone()),
                     ),
                     Snooze::not_snooze(),
                 ),
