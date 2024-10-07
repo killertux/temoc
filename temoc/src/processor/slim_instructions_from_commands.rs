@@ -157,6 +157,7 @@ impl ExpectedResult {
         }
     }
 
+    #[cfg(test)]
     pub fn any(id: Id, position: Position) -> Self {
         Self {
             id,
@@ -201,6 +202,7 @@ impl ExpectedResult {
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum ExpectedResultValue {
+    #[cfg(test)]
     Any,
     Ok,
     NullOrVoid,
@@ -211,6 +213,7 @@ pub enum ExpectedResultValue {
 impl Display for ExpectedResultValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            #[cfg(test)]
             ExpectedResultValue::Any => write!(f, "ANY"),
             ExpectedResultValue::NullOrVoid => write!(f, "NULL or VOID"),
             ExpectedResultValue::Ok => write!(f, "OK"),

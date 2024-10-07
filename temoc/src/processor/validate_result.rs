@@ -47,6 +47,7 @@ pub fn validate_result(
 impl PartialEq<InstructionResultValue> for ExpectedResultValue {
     fn eq(&self, other: &InstructionResultValue) -> bool {
         match (self, other) {
+            #[cfg(test)]
             (ExpectedResultValue::Any, _) => true,
             (ExpectedResultValue::NullOrVoid, InstructionResultValue::Void) => true,
             (ExpectedResultValue::NullOrVoid, InstructionResultValue::String(value))
@@ -95,6 +96,7 @@ fn failure_expected_result_detail_message(
     let position = &expected_result.position;
     let method_name = &expected_result.method_name;
     match expected_result.value {
+        #[cfg(test)]
         ExpectedResultValue::Any => "".into(),
         ExpectedResultValue::Ok => format!("in {file_path}:{position}"),
         ExpectedResultValue::NullOrVoid
