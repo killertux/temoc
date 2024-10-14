@@ -1,12 +1,15 @@
 use crate::app::{get_list_of_files, App};
 use crate::processor::Filter;
+use crate::slim_server_connector::build_slim_server_connector;
 use anyhow::{anyhow, bail, Result};
 use clap::Parser;
 use std::{fs::read_to_string, path::PathBuf};
 use toml::Table;
 
 mod app;
+mod port;
 mod processor;
+mod slim_server_connector;
 
 /// Test markdown files using a slim server
 #[derive(Parser, Debug)]
@@ -20,7 +23,7 @@ struct Args {
     port: Option<u16>,
     /// The size of the pool of ports to cycle through. Default is 20 (8085 - 8105)
     #[arg(short = 'l', long)]
-    pool_size: Option<u8>,
+    pool_size: Option<u16>,
     /// Command to start the slim server
     #[arg(short = 'x', long)]
     execute_server_command: Option<String>,
@@ -33,7 +36,7 @@ struct Args {
     /// Pipe STDERR and STDOUT of the slim server through the STDOUT
     #[arg(short = 'o', long)]
     pipe_output: bool,
-    /// Extension to filter markdown files. Default is md. Not case sensitive
+    /// Extension to filter markdown files. Default is md. Not case-sensitive
     #[arg(short, long)]
     extension: Option<String>,
     /// Filter the decision tables by the fixture class. Accept any regex string
@@ -55,11 +58,13 @@ fn main() -> Result<()> {
     }
 
     if App::new(
-        command,
         args.show_snoozed,
-        args.pipe_output,
-        args.port.unwrap_or(8085),
-        args.pool_size.unwrap_or(20),
+        build_slim_server_connector(
+            command,
+            args.port.unwrap_or(8085),
+            args.pool_size.unwrap_or(20),
+            args.pipe_output,
+        ),
         args.recursive,
         filter,
         args.extension.unwrap_or("md".to_string()).to_lowercase(),
@@ -83,7 +88,7 @@ fn append_config_to_args(mut args: Args) -> Result<Args> {
                 .map(|port| port.as_integer().expect("Expect the port to be a number") as u16));
             args.pool_size = args.pool_size.or(config_file
                 .get("pool_size")
-                .map(|port| port.as_integer().expect("Expect the port to be a number") as u8));
+                .map(|port| port.as_integer().expect("Expect the port to be a number") as u16));
             args.recursive = args.recursive
                 || config_file
                     .get("recursive")

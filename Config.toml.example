@@ -13,4 +13,4 @@ recursive = true
 # Show snoozed errors
 show_snoozed = true
 # Pipe STDOUT and STDERR of the slim server through the STDOUT of the application
-pipe_output = false
+pipe_output = true

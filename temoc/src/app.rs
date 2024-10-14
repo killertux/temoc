@@ -1,24 +1,16 @@
 use crate::processor::{
     execute_instructions_and_print_result, process_markdown_into_instructions, Filter,
 };
-use anyhow::{bail, Result};
-use rand::Rng;
+use crate::slim_server_connector::SlimServerConnector;
+use anyhow::Result;
 use slim_protocol::SlimConnection;
 use std::fs::{metadata, read_dir};
-use std::net::TcpStream;
 use std::num::ParseIntError;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::thread::sleep;
-use std::time::{Duration, Instant};
 
 pub struct App {
-    command: String,
     show_snoozed: bool,
-    pipe_output: bool,
-    base_port: u16,
-    current_port: u16,
-    pool_size: u8,
+    slim_server_connector: Box<dyn SlimServerConnector>,
     recursive: bool,
     extension: String,
     filter: Filter,
@@ -28,24 +20,16 @@ pub struct App {
 impl App {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        command: String,
         show_snoozed: bool,
-        pipe_output: bool,
-        base_port: u16,
-        pool_size: u8,
+        slim_server_connector: Box<dyn SlimServerConnector>,
         recursive: bool,
         filter: Filter,
         extension: String,
         paths: Vec<PathBuf>,
     ) -> Self {
-        let mut rng = rand::thread_rng();
         App {
-            command,
             show_snoozed,
-            pipe_output,
-            base_port,
-            current_port: rng.gen_range(base_port..(base_port + (pool_size - 1) as u16)),
-            pool_size,
+            slim_server_connector,
             recursive,
             extension,
             filter,
@@ -112,9 +96,8 @@ impl App {
             println!("NONE");
             return Ok(false);
         }
-        let mut slim_server = self.start_slim_server()?;
-        let tcp_stream = self.connect_to_slim_server(Duration::from_secs(10))?;
-        let mut connection = SlimConnection::new(tcp_stream.try_clone()?, tcp_stream)?;
+        let mut slim_server = self.slim_server_connector.start_and_connect()?;
+        let mut connection = SlimConnection::new(slim_server.reader()?, slim_server.writer()?)?;
         let fail = execute_instructions_and_print_result(
             &mut connection,
             &file.as_ref().to_string_lossy(),
@@ -123,48 +106,8 @@ impl App {
             self.show_snoozed,
         )?;
         connection.close()?;
-        slim_server.wait()?;
+        slim_server.close()?;
         Ok(fail)
-    }
-
-    fn start_slim_server(&self) -> Result<Child> {
-        let stdout = self.build_stdio();
-        let stderr = self.build_stdio();
-        Ok(Command::new("sh")
-            .arg("-c")
-            .arg(self.command.replace("%p", &self.current_port.to_string()))
-            .stdout(stdout)
-            .stderr(stderr)
-            .spawn()?)
-    }
-
-    fn connect_to_slim_server(&mut self, time_limit: Duration) -> Result<TcpStream> {
-        let start = Instant::now();
-        loop {
-            if let Ok(tcp_stream) = TcpStream::connect(format!("127.0.0.1:{}", self.current_port)) {
-                self.cycle_port();
-                return Ok(tcp_stream);
-            }
-            if start.elapsed() > time_limit {
-                bail!("Failed to connect to slim server");
-            }
-            sleep(Duration::from_millis(100));
-        }
-    }
-
-    fn cycle_port(&mut self) {
-        self.current_port += 1;
-        if self.current_port > self.base_port + self.pool_size as u16 {
-            self.current_port = self.base_port;
-        }
-    }
-
-    fn build_stdio(&self) -> Stdio {
-        if self.pipe_output {
-            Stdio::inherit()
-        } else {
-            Stdio::null()
-        }
     }
 }
 
