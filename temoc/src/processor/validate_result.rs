@@ -1,24 +1,28 @@
 use std::fmt::Display;
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 
 use slim_protocol::{InstructionResult, InstructionResultValue};
 
 use super::{
     markdown_commands::Snooze,
     slim_instructions_from_commands::{ExpectedResult, ExpectedResultValue},
+    State,
 };
 
 pub fn validate_result(
     file_path: impl Display,
     expected_result: Vec<(ExpectedResult, Snooze)>,
     result: Vec<InstructionResult>,
+    state: &mut State,
 ) -> Result<Vec<(String, Snooze)>> {
     let mut failures = Vec::new();
     if expected_result.len() != result.len() {
         bail!("Number of instruction results `{}` does not matched the expected number of results `{}`", result.len(), expected_result.len())
     }
-    for (result, (expected_result, snooze)) in result.into_iter().zip(expected_result.into_iter()) {
+    for (result, (mut expected_result, snooze)) in
+        result.into_iter().zip(expected_result.into_iter())
+    {
         if expected_result.id != result.id {
             failures.push((
                 format!(
@@ -28,6 +32,14 @@ pub fn validate_result(
                 snooze.clone(),
             ));
             continue;
+        }
+        if let ExpectedResultValue::Symbol(symbol) = expected_result.value {
+            expected_result.value = ExpectedResultValue::String(
+                state
+                    .get_symbol(&symbol)
+                    .ok_or_else(|| anyhow!("Symbol `{}` not found", symbol))?
+                    .clone(),
+            );
         }
         if expected_result.value != result.value {
             failures.push((
@@ -39,6 +51,11 @@ pub fn validate_result(
                 ),
                 snooze.clone(),
             ));
+        }
+        if let (ExpectedResultValue::SetSymbol(symbol), InstructionResultValue::String(value)) =
+            (expected_result.value, result.value)
+        {
+            state.set_symbol(symbol, value);
         }
     }
     Ok(failures)
@@ -93,6 +110,7 @@ impl PartialEq<InstructionResultValue> for ExpectedResultValue {
                 }
                 true
             }
+            (ExpectedResultValue::SetSymbol(_), InstructionResultValue::String(_)) => true,
             _ => false,
         }
     }
@@ -111,6 +129,8 @@ fn failure_expected_result_detail_message(
         ExpectedResultValue::NullOrVoid
         | ExpectedResultValue::NullOrVoidOrMethodNotFound
         | ExpectedResultValue::String(_)
+        | ExpectedResultValue::SetSymbol(_)
+        | ExpectedResultValue::Symbol(_)
         | ExpectedResultValue::List(_) => match method_name {
             Some(method_name) => format!(
                 "in {file_path}:{position} for method call {}",
@@ -134,6 +154,7 @@ mod test {
             "file_path.md",
             vec![],
             vec![InstructionResult::ok(Id::new())],
+            &mut State::default(),
         );
         assert_eq!(
             "Number of instruction results `1` does not matched the expected number of results `0`",
@@ -272,6 +293,7 @@ mod test {
                 InstructionResult::ok(id.clone()),
                 InstructionResult::void(id.clone()),
             ],
+            &mut State::default(),
         )?;
         assert!(result.is_empty());
         Ok(())
@@ -453,6 +475,7 @@ mod test {
                     ],
                 ),
             ],
+            &mut State::default(),
         )?;
         assert_eq!(
             vec![
@@ -499,6 +522,151 @@ mod test {
             ],
             result
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_symbol() -> Result<()> {
+        let id = Id::new();
+        let position = Position::new(0, 0);
+        let method_name = MethodName("TestMethod".into(), position.clone());
+        let mut state = State::default();
+        let result = validate_result(
+            "test_file.md",
+            vec![(
+                ExpectedResult::set_symbol(
+                    id.clone(),
+                    position.clone(),
+                    method_name,
+                    "Symbol".into(),
+                ),
+                Snooze::not_snooze(),
+            )],
+            vec![InstructionResult::string(id.clone(), "Value".into())],
+            &mut state,
+        )?;
+        assert!(result.is_empty());
+        assert_eq!("Value", state.get_symbol("Symbol").unwrap());
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_symbol_with_problem() -> Result<()> {
+        let id = Id::new();
+        let position = Position::new(0, 0);
+        let method_name = MethodName("TestMethod".into(), position.clone());
+        let mut state = State::default();
+        let result = validate_result(
+            "test_file.md",
+            vec![
+                (
+                    ExpectedResult::set_symbol(
+                        id.clone(),
+                        position.clone(),
+                        method_name.clone(),
+                        "Symbol".into(),
+                    ),
+                    Snooze::not_snooze(),
+                ),
+                (
+                    ExpectedResult::set_symbol(
+                        id.clone(),
+                        position.clone(),
+                        method_name.clone(),
+                        "Symbol".into(),
+                    ),
+                    Snooze::not_snooze(),
+                ),
+                (
+                    ExpectedResult::set_symbol(
+                        id.clone(),
+                        position.clone(),
+                        method_name,
+                        "Symbol".into(),
+                    ),
+                    Snooze::not_snooze(),
+                ),
+            ],
+            vec![
+                InstructionResult::ok(id.clone()),
+                InstructionResult::void(id.clone()),
+                InstructionResult::exception(id.clone(), ExceptionMessage::new("Error".into())),
+            ],
+            &mut state,
+        )?;
+        assert_eq!(
+            vec![
+                (format!("Expected SET SYMBOL `Symbol`, got OK in test_file.md:0:0 for method call TestMethod"), Snooze::not_snooze()),
+                (format!("Expected SET SYMBOL `Symbol`, got VOID in test_file.md:0:0 for method call TestMethod"), Snooze::not_snooze()),
+                (format!("Expected SET SYMBOL `Symbol`, got Exception `Error` in test_file.md:0:0 for method call TestMethod"), Snooze::not_snooze()),
+            ],
+            result
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_assert_symbol_not_found() -> Result<()> {
+        let id = Id::new();
+        let position = Position::new(0, 0);
+        let method_name = MethodName("TestMethod".into(), position.clone());
+        let mut state = State::default();
+        let result = validate_result(
+            "test_file.md",
+            vec![(
+                ExpectedResult::symbol(
+                    id.clone(),
+                    position.clone(),
+                    method_name.clone(),
+                    "Symbol".into(),
+                ),
+                Snooze::not_snooze(),
+            )],
+            vec![InstructionResult::string(id.clone(), "Value".into())],
+            &mut state,
+        );
+        assert_eq!(
+            "Symbol `Symbol` not found",
+            result.expect_err("Expect error").to_string()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_assert_symbol() -> Result<()> {
+        let id = Id::new();
+        let position = Position::new(0, 0);
+        let method_name = MethodName("TestMethod".into(), position.clone());
+        let mut state = State::default();
+        let result = validate_result(
+            "test_file.md",
+            vec![
+                (
+                    ExpectedResult::set_symbol(
+                        id.clone(),
+                        position.clone(),
+                        method_name.clone(),
+                        "Symbol".into(),
+                    ),
+                    Snooze::not_snooze(),
+                ),
+                (
+                    ExpectedResult::symbol(
+                        id.clone(),
+                        position.clone(),
+                        method_name.clone(),
+                        "Symbol".into(),
+                    ),
+                    Snooze::not_snooze(),
+                ),
+            ],
+            vec![
+                InstructionResult::string(id.clone(), "Value".into()),
+                InstructionResult::string(id.clone(), "Value".into()),
+            ],
+            &mut state,
+        )?;
+        assert!(result.is_empty());
         Ok(())
     }
 }

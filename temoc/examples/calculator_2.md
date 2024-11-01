@@ -33,3 +33,13 @@ And we still need to implement exponential:
 | 2  | 2   | 4    |
 | 3  | 2   | 9    |
 | 3  | 3   | 27   |
+
+Variables:
+
+[//]: # (decisionTable Calculator.Fixtures.CalculatorFixture )
+
+| a  | b | sum? |
+|----|---|------|
+| 1  | 2 | $V=  |
+| $V | 2 | 5    |
+| 2  | 1 | $V   |

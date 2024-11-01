@@ -10,4 +10,4 @@ description = "General Slim Protocol stuff. Used internally by rust_slim and Tem
 [dependencies]
 ulid = "1"
 thiserror = "1"
-read_char = "0.1.1"
+read_char = "0.1"

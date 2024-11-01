@@ -160,6 +160,34 @@ impl FromSlimReader for Instruction {
                     args: data,
                 })
             }
+            "callAndAssign" => {
+                let symbol = data
+                    .pop()
+                    .ok_or(FromSlimReaderError::Other("Expected symbol".into()))?;
+                let instance = data
+                    .pop()
+                    .ok_or(FromSlimReaderError::Other("Expected instance".into()))?;
+                let function = data
+                    .pop()
+                    .ok_or(FromSlimReaderError::Other("Expected function".into()))?;
+                data.reverse();
+                Ok(Instruction::CallAndAssign {
+                    id,
+                    instance,
+                    function,
+                    symbol,
+                    args: data,
+                })
+            }
+            "assign" => {
+                let symbol = data
+                    .pop()
+                    .ok_or(FromSlimReaderError::Other("Expected symbol".into()))?;
+                let value = data
+                    .pop()
+                    .ok_or(FromSlimReaderError::Other("Expected value".into()))?;
+                Ok(Instruction::Assign { id, symbol, value })
+            }
             other => todo!("Not implemented {other}"),
         }
     }

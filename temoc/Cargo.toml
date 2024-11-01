@@ -11,15 +11,15 @@ readme = "readme.md"
 
 [dependencies]
 anyhow = "1"
-chrono = "0.4.31"
+chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
-convert_case = "0.6.0"
-markdown = "1.0.0-alpha.14"
-toml = "0.8.8"
+convert_case = "0.6"
+markdown = "1.0.0-alpha.15"
+toml = "0.8"
 ulid = "1"
 slim_protocol = { path = "../slim_protocol" }
-regex = "1.10.5"
-rand = "0.8.5"
+regex = "1"
+rand = "0.8"
 
 [dev-dependencies]
 rust_slim = { path = "../rust_slim/", features = ["macros"] }

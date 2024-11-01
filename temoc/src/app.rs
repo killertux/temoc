@@ -1,5 +1,5 @@
 use crate::processor::{
-    execute_instructions_and_print_result, process_markdown_into_instructions, Filter,
+    execute_instructions_and_print_result, process_markdown_into_instructions, Filter, State,
 };
 use crate::slim_server_connector::SlimServerConnector;
 use anyhow::Result;
@@ -97,6 +97,7 @@ impl App {
             return Ok(false);
         }
         let mut slim_server = self.slim_server_connector.start_and_connect()?;
+        let mut state = State::default();
         let mut connection = SlimConnection::new(slim_server.reader()?, slim_server.writer()?)?;
         let fail = execute_instructions_and_print_result(
             &mut connection,
@@ -104,6 +105,7 @@ impl App {
             instructions,
             expected_result,
             self.show_snoozed,
+            &mut state,
         )?;
         connection.close()?;
         slim_server.close()?;

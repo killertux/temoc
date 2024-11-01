@@ -11,6 +11,7 @@ use anyhow::{anyhow, Result};
 use markdown::mdast::Node;
 use regex::Regex;
 use slim_protocol::{Instruction, SlimConnection};
+use std::collections::HashMap;
 use std::{
     fs::read_to_string,
     io::{Read, Write},
@@ -20,6 +21,21 @@ use std::{
 mod markdown_commands;
 mod slim_instructions_from_commands;
 mod validate_result;
+
+#[derive(Debug, Default)]
+pub struct State {
+    symbols: HashMap<String, String>,
+}
+
+impl State {
+    pub fn set_symbol(&mut self, key: String, value: String) {
+        self.symbols.insert(key, value);
+    }
+
+    pub fn get_symbol(&self, key: &str) -> Option<&String> {
+        self.symbols.get(key)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Filter {
@@ -91,9 +107,10 @@ pub fn execute_instructions_and_print_result<R: Read, W: Write>(
     instructions: Vec<Instruction>,
     expected_result: Vec<ExpectedResulWithSnooze>,
     show_snoozed: bool,
+    state: &mut State,
 ) -> Result<bool> {
     let result = connection.send_instructions(&instructions)?;
-    let failures = validate_result(file_path, expected_result, result)?;
+    let failures = validate_result(file_path, expected_result, result, state)?;
     print_fail_or_ok(show_snoozed, failures)
 }
 
