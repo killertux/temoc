@@ -18,21 +18,17 @@ jobs:
           # x86_64 targets
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            use_cross: false
             archive: tar.gz
           - os: macos-latest
             target: x86_64-apple-darwin
-            use_cross: false
             archive: zip
 
           # aarch64 (ARM64) targets
           - os: ubuntu-latest
             target: aarch64-unknown-linux-musl
-            use_cross: true
             archive: tar.gz
           - os: macos-latest
             target: aarch64-apple-darwin
-            use_cross: false
             archive: zip
 
     steps:
@@ -45,14 +41,9 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install cross
-        if: matrix.use_cross
         run: |
           cargo install cross --git https://github.com/cross-rs/cross
           echo "CARGO=cross" >> $GITHUB_ENV
-
-      - name: Set cargo
-        if: "!matrix.use_cross"
-        run: echo "CARGO=cargo" >> $GITHUB_ENV
 
       - name: Build
         run: |
@@ -62,7 +53,7 @@ jobs:
       - name: Package (tar.gz)
         if: matrix.archive == 'tar.gz'
         run: |
-          cd temoc/target/${{ matrix.target }}/release
+          cd target/${{ matrix.target }}/release
           tar czf ../../../../temoc-${{ matrix.target }}.tar.gz temoc
           cd ../../../..
           echo "ASSET=temoc-${{ matrix.target }}.tar.gz" >> $GITHUB_ENV
@@ -70,7 +61,7 @@ jobs:
       - name: Package (zip - Unix)
         if: matrix.archive == 'zip' && runner.os != 'Windows'
         run: |
-          cd temoc/target/${{ matrix.target }}/release
+          cd target/${{ matrix.target }}/release
           if [ -f temoc ]; then
             zip ../../../../temoc-${{ matrix.target }}.zip temoc
           else
@@ -83,7 +74,7 @@ jobs:
         if: matrix.archive == 'zip' && runner.os == 'Windows'
         shell: bash
         run: |
-          cd temoc/target/${{ matrix.target }}/release
+          cd target/${{ matrix.target }}/release
           7z a ../../../../temoc-${{ matrix.target }}.zip temoc.exe
           cd ../../../..
           echo "ASSET=temoc-${{ matrix.target }}.zip" >> $GITHUB_ENV
