@@ -8,9 +8,12 @@ use std::{
     io::Read,
     net::{TcpListener, TcpStream},
     process::{Child, Command, Stdio},
+    sync::Mutex,
     thread,
     time::{Duration, Instant},
 };
+
+static SERVER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn id(value: &str) -> Id {
     Id::from(value)
@@ -42,7 +45,15 @@ fn connect(port: u16) -> TcpStream {
     let started = Instant::now();
     loop {
         match TcpStream::connect(("127.0.0.1", port)) {
-            Ok(stream) => return stream,
+            Ok(stream) => {
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .expect("set conformance read timeout");
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .expect("set conformance write timeout");
+                return stream;
+            }
             Err(error) if started.elapsed() < Duration::from_secs(5) => {
                 let _ = error;
                 thread::sleep(Duration::from_millis(10));
@@ -59,6 +70,9 @@ fn close_child(mut child: Child) {
 
 #[test]
 fn tcp_v05_conformance_exercises_recursive_values_and_execution_context() {
+    let _guard = SERVER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let port = unused_port();
     let child = server_command(port)
         .stdin(Stdio::null())
@@ -365,6 +379,9 @@ fn tcp_v05_conformance_exercises_recursive_values_and_execution_context() {
 
 #[test]
 fn stdio_port_one_keeps_protocol_frames_clean_and_tunnels_explicit_output() {
+    let _guard = SERVER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let mut child = server_command(1)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -437,6 +454,9 @@ fn stdio_port_one_keeps_protocol_frames_clean_and_tunnels_explicit_output() {
 #[cfg(feature = "html-hash")]
 #[test]
 fn tcp_html_hash_conversion_runs_through_construction_and_calls() {
+    let _guard = SERVER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let port = unused_port();
     let child = server_command(port)
         .stdin(Stdio::null())
