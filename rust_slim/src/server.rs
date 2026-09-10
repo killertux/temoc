@@ -1,6 +1,6 @@
 use crate::{
-    ClassPath, Constructor, ConstructorError, ExecuteMethodError, SlimFixture, SlimObject,
-    SlimValue,
+    ClassPath, Constructor, ConstructorError, ExecuteMethodError, SlimControl,
+    SlimControlException, SlimFixture, SlimObject, SlimValue,
 };
 use convert_case::{Case, Casing};
 use slim_protocol::{
@@ -10,6 +10,8 @@ use slim_protocol::{
 use std::{
     collections::HashMap,
     io::{BufReader, Read, Write},
+    net::TcpListener,
+    time::{Duration, Instant},
 };
 use thiserror::Error;
 
@@ -22,6 +24,92 @@ pub enum SlimServerError {
     IoError(#[from] std::io::Error),
     #[error(transparent)]
     FromSlimReaderError(#[from] FromSlimReaderError),
+    #[error(transparent)]
+    Options(#[from] SlimServerOptionsError),
+}
+
+/// Server configuration understood by the V0.5 runtime.
+///
+/// `instruction_timeout` is an *observational* timeout. Fixtures execute on
+/// the server thread and may own `Rc<RefCell<_>>` state, so Rust cannot safely
+/// cancel arbitrary fixture code. Once an instruction returns, its elapsed
+/// time is checked and an overrun is reported as `TIMED_OUT <seconds>`.
+/// Side effects performed before the return remain visible and the runtime
+/// continues with the next instruction. Fixtures that need prompt stopping
+/// must implement cooperative cancellation in their own APIs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SlimServerOptions {
+    instruction_timeout: Option<Duration>,
+}
+
+impl SlimServerOptions {
+    pub fn with_instruction_timeout_seconds(seconds: u64) -> Self {
+        Self {
+            instruction_timeout: Some(Duration::from_secs(seconds)),
+        }
+    }
+
+    pub fn instruction_timeout(&self) -> Option<Duration> {
+        self.instruction_timeout
+    }
+
+    /// Parses the documented `-s <seconds>` SliM flag. Other arguments are
+    /// ignored so the same slice can include the command-line port.
+    pub fn from_slim_flags(flags: &str) -> Result<Self, SlimServerOptionsError> {
+        Self::from_args(flags.split_whitespace())
+    }
+
+    pub fn from_args<I, S>(args: I) -> Result<Self, SlimServerOptionsError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let values = args
+            .into_iter()
+            .map(|value| value.as_ref().to_owned())
+            .collect::<Vec<_>>();
+        let mut options = Self::default();
+        let mut index = 0;
+        while index < values.len() {
+            let value = &values[index];
+            let seconds = if value == "-s" {
+                index += 1;
+                values
+                    .get(index)
+                    .ok_or(SlimServerOptionsError::MissingTimeout)?
+            } else if let Some(seconds) = value.strip_prefix("-s") {
+                if seconds.is_empty() {
+                    index += 1;
+                    values
+                        .get(index)
+                        .ok_or(SlimServerOptionsError::MissingTimeout)?
+                } else {
+                    seconds
+                }
+            } else {
+                index += 1;
+                continue;
+            };
+            let seconds = seconds
+                .parse::<u64>()
+                .map_err(|_| SlimServerOptionsError::InvalidTimeout(seconds.to_owned()))?;
+            options.instruction_timeout = Some(Duration::from_secs(seconds));
+            index += 1;
+        }
+        Ok(options)
+    }
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum SlimServerOptionsError {
+    #[error("the -s SliM timeout flag needs a number of seconds")]
+    MissingTimeout,
+    #[error("invalid -s SliM timeout value: {0}")]
+    InvalidTimeout(String),
+    #[error("the SliM server command line needs a port")]
+    MissingPort,
+    #[error("invalid SliM server port: {0}")]
+    InvalidPort(String),
 }
 
 /// The mutable execution context required by the SliM instruction set.
@@ -35,10 +123,15 @@ pub struct SlimServer<R: Read, W: Write> {
     imports: Vec<String>,
     reader: BufReader<R>,
     writer: W,
+    options: SlimServerOptions,
 }
 
 impl<R: Read, W: Write> SlimServer<R, W> {
     pub fn new(reader: R, writer: W) -> Self {
+        Self::with_options(reader, writer, SlimServerOptions::default())
+    }
+
+    pub fn with_options(reader: R, writer: W, options: SlimServerOptions) -> Self {
         Self {
             fixtures: HashMap::new(),
             instances: HashMap::new(),
@@ -48,6 +141,7 @@ impl<R: Read, W: Write> SlimServer<R, W> {
             imports: Vec::new(),
             reader: BufReader::new(reader),
             writer,
+            options,
         }
     }
 
@@ -77,10 +171,33 @@ impl<R: Read, W: Write> SlimServer<R, W> {
     }
 
     fn execute_instructions(&mut self, instructions: Vec<Instruction>) -> Vec<InstructionResult> {
-        instructions
-            .into_iter()
-            .map(|instruction| self.execute_instruction(instruction))
-            .collect()
+        let mut results = Vec::with_capacity(instructions.len());
+        for instruction in instructions {
+            let timeout_eligible = matches!(
+                &instruction,
+                Instruction::Make { .. }
+                    | Instruction::Call { .. }
+                    | Instruction::CallAndAssign { .. }
+            );
+            let started = Instant::now();
+            let mut result = self.execute_instruction(instruction);
+            if timeout_eligible && control_from_result(&result).is_none() {
+                if let Some(timeout) = self.options.instruction_timeout {
+                    if started.elapsed() >= timeout {
+                        result = exception(
+                            result.id.clone(),
+                            format!("TIMED_OUT {}", timeout.as_secs()),
+                        );
+                    }
+                }
+            }
+            let control = control_from_result(&result);
+            results.push(result);
+            if control.is_some() {
+                break;
+            }
+        }
+        results
     }
 
     fn execute_instruction(&mut self, instruction: Instruction) -> InstructionResult {
@@ -172,6 +289,7 @@ impl<R: Read, W: Write> SlimServer<R, W> {
                 id,
                 format!("COULD_NOT_INVOKE_CONSTRUCTOR {class} message:<<{message}>>"),
             ),
+            Err(ConstructorError::Control(control)) => control_exception(id, control),
         }
     }
 
@@ -209,6 +327,7 @@ impl<R: Read, W: Write> SlimServer<R, W> {
                 }
                 .to_string(),
             ),
+            Err(ExecuteMethodError::Control(control)) => control_exception(id, control),
             Err(error) => exception(id, error.to_string()),
         }
     }
@@ -371,6 +490,133 @@ impl<R: Read, W: Write> SlimServer<R, W> {
     }
 }
 
+/// A server whose transport is selected from the SliM command-line port.
+pub type PortSlimServer = SlimServer<Box<dyn Read + Send>, Box<dyn Write + Send>>;
+
+impl SlimServer<Box<dyn Read + Send>, Box<dyn Write + Send>> {
+    /// Parses FitNesse's `[-s seconds] port` arguments and opens the selected
+    /// transport. Pass `std::env::args().skip(1)` from a server binary.
+    pub fn listen_from_args<I, S>(args: I) -> Result<Self, SlimServerError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let values = args
+            .into_iter()
+            .map(|value| value.as_ref().to_owned())
+            .collect::<Vec<_>>();
+        let port_value = values.last().ok_or(SlimServerOptionsError::MissingPort)?;
+        let port = port_value
+            .parse::<u16>()
+            .map_err(|_| SlimServerOptionsError::InvalidPort(port_value.clone()))?;
+        let options = SlimServerOptions::from_args(&values)?;
+        Self::listen_on_port(port, options)
+    }
+
+    /// Creates a V0.5 server transport for the supplied SliM port.
+    ///
+    /// Port `1` uses the current process stdin/stdout. Any other port binds a
+    /// TCP listener, accepts one FitNesse connection, then returns a server
+    /// ready for fixture registration and [`SlimServer::run`].
+    pub fn listen_on_port(port: u16, options: SlimServerOptions) -> Result<Self, SlimServerError> {
+        if port == 1 {
+            return Ok(Self::with_options(
+                Box::new(std::io::stdin()),
+                Box::new(std::io::stdout()),
+                options,
+            ));
+        }
+        let listener = TcpListener::bind(("0.0.0.0", port))?;
+        let (stream, _) = listener.accept()?;
+        Ok(Self::with_options(
+            Box::new(stream.try_clone()?),
+            Box::new(stream),
+            options,
+        ))
+    }
+}
+
+/// A line-oriented output tunnel for fixtures running in stdio mode.
+///
+/// SliM reserves stdout for protocol frames when port `1` is used. Stable
+/// Rust cannot safely redirect arbitrary process-wide stdout/stderr without
+/// platform-specific file-descriptor manipulation, so fixtures that produce
+/// output should write to this explicit adapter, targeting stderr. It emits
+/// the V0.5 `SOUT :`/`SOUT.:` or `SERR :`/`SERR.:` prefixes exactly.
+pub struct OutputTunnel<W: Write> {
+    destination: W,
+    first_line: bool,
+    at_line_start: bool,
+    stream: OutputStream,
+}
+
+#[derive(Clone, Copy)]
+enum OutputStream {
+    Stdout,
+    Stderr,
+}
+
+impl<W: Write> OutputTunnel<W> {
+    pub fn stdout(destination: W) -> Self {
+        Self {
+            destination,
+            first_line: true,
+            at_line_start: true,
+            stream: OutputStream::Stdout,
+        }
+    }
+
+    pub fn stderr(destination: W) -> Self {
+        Self {
+            destination,
+            first_line: true,
+            at_line_start: true,
+            stream: OutputStream::Stderr,
+        }
+    }
+
+    pub fn into_inner(self) -> W {
+        self.destination
+    }
+
+    fn prefix(&self) -> &'static [u8] {
+        match (self.stream, self.first_line) {
+            (OutputStream::Stdout, true) => b"SOUT :",
+            (OutputStream::Stdout, false) => b"SOUT.:",
+            (OutputStream::Stderr, true) => b"SERR :",
+            (OutputStream::Stderr, false) => b"SERR.:",
+        }
+    }
+}
+
+impl<W: Write> Write for OutputTunnel<W> {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        for byte in buffer {
+            if self.at_line_start {
+                self.destination.write_all(self.prefix())?;
+                self.at_line_start = false;
+                self.first_line = false;
+            }
+            self.destination.write_all(std::slice::from_ref(byte))?;
+            if *byte == b'\n' {
+                self.at_line_start = true;
+            }
+        }
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.destination.flush()?;
+        // A flush after a completed line delimits one fixture log message.
+        // Do not reset an unfinished line: doing so would inject a prefix in
+        // the middle of its text on the next partial write.
+        if self.at_line_start {
+            self.first_line = true;
+        }
+        Ok(())
+    }
+}
+
 fn invoke(
     object: &SlimObject,
     method: &str,
@@ -396,6 +642,35 @@ fn is_symbol_name(name: &str) -> bool {
 
 fn exception(id: Id, value: String) -> InstructionResult {
     InstructionResult::exception(id, ExceptionMessage::new(value))
+}
+
+fn control_exception(id: Id, control: SlimControlException) -> InstructionResult {
+    let tag = match control.control {
+        SlimControl::AbortSlimTest => "ABORT_SLIM_TEST",
+        SlimControl::AbortSlimSuite => "ABORT_SLIM_SUITE",
+        SlimControl::IgnoreScriptTest => "IGNORE_SCRIPT_TEST",
+        SlimControl::IgnoreAllTests => "IGNORE_ALL_TESTS",
+    };
+    let message = control
+        .message
+        .map(|message| format!("message:<<{message}>>"))
+        .unwrap_or_default();
+    exception(id, format!("{tag}:{message}"))
+}
+
+fn control_from_result(result: &InstructionResult) -> Option<SlimControl> {
+    let InstructionResultValue::Exception(message) = &result.value else {
+        return None;
+    };
+    let message = message.raw_message();
+    [
+        ("ABORT_SLIM_TEST:", SlimControl::AbortSlimTest),
+        ("ABORT_SLIM_SUITE:", SlimControl::AbortSlimSuite),
+        ("IGNORE_SCRIPT_TEST:", SlimControl::IgnoreScriptTest),
+        ("IGNORE_ALL_TESTS:", SlimControl::IgnoreAllTests),
+    ]
+    .into_iter()
+    .find_map(|(tag, control)| message.starts_with(tag).then_some(control))
 }
 
 fn malformed_instruction(id: Id, fields: Vec<String>) -> InstructionResult {
@@ -451,7 +726,7 @@ fn instruction_result_value(value: SlimValue) -> InstructionResultValue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
+    use std::{io::Cursor, thread, time::Duration};
 
     struct Fixture {
         value: String,
@@ -553,10 +828,29 @@ mod tests {
             method: &str,
             _args: Vec<SlimValue>,
         ) -> Result<SlimValue, ExecuteMethodError> {
-            Err(ExecuteMethodError::MethodNotFound {
-                method: method.into(),
-                class: "FailingFixture".into(),
-            })
+            match method {
+                "abort_test" => Err(ExecuteMethodError::Control(SlimControl::abort_slim_test(
+                    "stop this test",
+                ))),
+                "abort_suite" => Err(ExecuteMethodError::Control(SlimControl::abort_slim_suite(
+                    "stop this suite",
+                ))),
+                "ignore_script" => Err(ExecuteMethodError::Control(
+                    SlimControl::ignore_script_test("ignore this script"),
+                )),
+                "ignore_all" => Err(ExecuteMethodError::Control(SlimControl::ignore_all_tests(
+                    "ignore this test",
+                ))),
+                "slow" => {
+                    thread::sleep(Duration::from_millis(1_050));
+                    Ok(SlimValue::String("finished late".into()))
+                }
+                "after" => Ok(SlimValue::String("after".into())),
+                _ => Err(ExecuteMethodError::MethodNotFound {
+                    method: method.into(),
+                    class: "FailingFixture".into(),
+                }),
+            }
         }
     }
     impl ClassPath for Fixture {
@@ -601,12 +895,16 @@ mod tests {
     impl Constructor for FailingFixture {
         fn construct(args: Vec<SlimValue>) -> Result<Self, ConstructorError> {
             match args.as_slice() {
+                [] => Ok(Self),
                 [SlimValue::String(value)] if value == "conversion" => {
                     Err(ConstructorError::ArgumentParsingError("i64".into()))
                 }
                 [SlimValue::String(value)] if value == "invocation" => Err(
                     ConstructorError::CouldNotInvoke("constructor failed".into()),
                 ),
+                [SlimValue::String(value)] if value == "control" => Err(ConstructorError::Control(
+                    SlimControl::abort_slim_test("constructor stopped"),
+                )),
                 _ => Err(ConstructorError::NoConstructor),
             }
         }
@@ -1123,6 +1421,251 @@ mod tests {
             InstructionResult::string("exact-call".into(), "oldest".into()),
             result[5]
         );
+    }
+
+    #[test]
+    fn control_exceptions_have_exact_tags_and_stop_only_the_current_batch() {
+        let controls = [
+            ("abort_test", "ABORT_SLIM_TEST:message:<<stop this test>>"),
+            (
+                "abort_suite",
+                "ABORT_SLIM_SUITE:message:<<stop this suite>>",
+            ),
+            (
+                "ignore_script",
+                "IGNORE_SCRIPT_TEST:message:<<ignore this script>>",
+            ),
+            (
+                "ignore_all",
+                "IGNORE_ALL_TESTS:message:<<ignore this test>>",
+            ),
+        ];
+
+        for (method, expected) in controls {
+            let mut server = server();
+            assert_eq!(
+                vec![InstructionResult::ok("make".into())],
+                server.execute_instructions(vec![Instruction::Make {
+                    id: "make".into(),
+                    instance: "failing".into(),
+                    class: "FailingFixture".into(),
+                    args: vec![],
+                }])
+            );
+            let batch = server.execute_instructions(vec![
+                call("control", "failing", method, vec![]),
+                call("skipped", "failing", "after", vec![]),
+            ]);
+            assert_eq!(1, batch.len());
+            assert_eq!(
+                InstructionResult::exception(
+                    "control".into(),
+                    ExceptionMessage::new(expected.into())
+                ),
+                batch[0]
+            );
+            assert_eq!(
+                vec![InstructionResult::string("next".into(), "after".into())],
+                server.execute_instructions(vec![call("next", "failing", "after", vec![])])
+            );
+        }
+
+        let mut server = server();
+        let result = server.execute_instructions(vec![
+            Instruction::Make {
+                id: "constructor-control".into(),
+                instance: "never-created".into(),
+                class: "FailingFixture".into(),
+                args: vec!["control".into()],
+            },
+            Instruction::Import {
+                id: "skipped".into(),
+                path: "Skipped".into(),
+            },
+        ]);
+        assert_eq!(
+            vec![InstructionResult::exception(
+                "constructor-control".into(),
+                ExceptionMessage::new("ABORT_SLIM_TEST:message:<<constructor stopped>>".into()),
+            )],
+            result
+        );
+        assert!(server.imports.is_empty());
+        assert_eq!(
+            InstructionResult::exception(
+                "plain".into(),
+                ExceptionMessage::new("IGNORE_ALL_TESTS:".into())
+            ),
+            control_exception(
+                "plain".into(),
+                SlimControlException::without_message(SlimControl::IgnoreAllTests)
+            )
+        );
+    }
+
+    #[test]
+    fn soft_timeout_reports_the_protocol_message_and_preserves_side_effects() {
+        let mut server = SlimServer::with_options(
+            Cursor::new(Vec::new()),
+            Cursor::new(Vec::new()),
+            SlimServerOptions::with_instruction_timeout_seconds(0),
+        );
+        server.instances.insert(
+            "failing".into(),
+            SlimObject::fixture(FailingFixture, "FailingFixture"),
+        );
+        let result = server.execute_instructions(vec![
+            Instruction::Import {
+                id: "import".into(),
+                path: "Fixtures".into(),
+            },
+            Instruction::Assign {
+                id: "assign".into(),
+                symbol: "Value".into(),
+                value: "value".into(),
+            },
+            call("call", "failing", "after", vec![]),
+            Instruction::CallAndAssign {
+                id: "call-and-assign".into(),
+                symbol: "Late".into(),
+                instance: "failing".into(),
+                function: "after".into(),
+                args: vec![],
+            },
+        ]);
+        assert_eq!(InstructionResult::ok("import".into()), result[0]);
+        assert_eq!(InstructionResult::ok("assign".into()), result[1]);
+        assert_eq!(
+            InstructionResult::exception(
+                "call".into(),
+                ExceptionMessage::new("TIMED_OUT 0".into()),
+            ),
+            result[2]
+        );
+        assert_eq!(
+            InstructionResult::exception(
+                "call-and-assign".into(),
+                ExceptionMessage::new("TIMED_OUT 0".into()),
+            ),
+            result[3]
+        );
+        assert_eq!(
+            Some(&SlimValue::String("value".into())),
+            server.symbols.get("Value")
+        );
+        assert_eq!(
+            Some(&SlimValue::String("after".into())),
+            server.symbols.get("Late")
+        );
+
+        let control = server.execute_instructions(vec![
+            call("control", "failing", "abort_test", vec![]),
+            call("skipped", "failing", "after", vec![]),
+        ]);
+        assert_eq!(1, control.len());
+        assert_eq!(
+            InstructionResult::exception(
+                "control".into(),
+                ExceptionMessage::new("ABORT_SLIM_TEST:message:<<stop this test>>".into()),
+            ),
+            control[0]
+        );
+    }
+
+    #[test]
+    fn parses_documented_timeout_flags() {
+        assert_eq!(
+            SlimServerOptions::with_instruction_timeout_seconds(7),
+            SlimServerOptions::from_slim_flags("-v -s 7").unwrap()
+        );
+        assert_eq!(
+            SlimServerOptions::with_instruction_timeout_seconds(3),
+            SlimServerOptions::from_slim_flags("-s3").unwrap()
+        );
+        assert_eq!(
+            Err(SlimServerOptionsError::MissingTimeout),
+            SlimServerOptions::from_slim_flags("-s")
+        );
+
+        let server = PortSlimServer::listen_from_args(["-s", "9", "1"]).unwrap();
+        assert_eq!(
+            SlimServerOptions::with_instruction_timeout_seconds(9),
+            server.options
+        );
+        assert!(matches!(
+            PortSlimServer::listen_from_args(Vec::<String>::new()),
+            Err(SlimServerError::Options(
+                SlimServerOptionsError::MissingPort
+            ))
+        ));
+        assert!(matches!(
+            PortSlimServer::listen_from_args(["not-a-port"]),
+            Err(SlimServerError::Options(
+                SlimServerOptionsError::InvalidPort(value)
+            )) if value == "not-a-port"
+        ));
+    }
+
+    #[test]
+    fn output_tunnel_uses_v05_prefixes_for_each_line() {
+        let mut stdout = OutputTunnel::stdout(Vec::new());
+        stdout.write_all(b"one\ntwo").unwrap();
+        stdout.write_all(b"\nthree\n").unwrap();
+        stdout.flush().unwrap();
+        stdout.write_all(b"again\n").unwrap();
+        assert_eq!(
+            b"SOUT :one\nSOUT.:two\nSOUT.:three\nSOUT :again\n",
+            stdout.into_inner().as_slice()
+        );
+
+        let mut stderr = OutputTunnel::stderr(Vec::new());
+        stderr.write_all(b"problem\nagain").unwrap();
+        stderr.flush().unwrap();
+        stderr.write_all(b" still here").unwrap();
+        assert_eq!(
+            b"SERR :problem\nSERR.:again still here",
+            stderr.into_inner().as_slice()
+        );
+    }
+
+    #[test]
+    fn abort_suite_does_not_close_the_connection_for_the_next_batch() {
+        let batches = [
+            vec![Instruction::Make {
+                id: "make".into(),
+                instance: "failing".into(),
+                class: "FailingFixture".into(),
+                args: vec![],
+            }],
+            vec![
+                call("abort", "failing", "abort_suite", vec![]),
+                call("skipped", "failing", "after", vec![]),
+            ],
+            vec![call("next", "failing", "after", vec![])],
+        ];
+        let mut input = batches
+            .iter()
+            .flat_map(|batch| batch.to_slim_string().as_bytes().to_vec())
+            .collect::<Vec<_>>();
+        input.extend_from_slice("bye".to_slim_string().as_bytes());
+        let mut output = Vec::new();
+        let mut server = SlimServer::new(Cursor::new(input), Cursor::new(&mut output));
+        server.add_fixture::<FailingFixture>();
+        server.run().unwrap();
+
+        let expected_batches = [
+            vec![InstructionResult::ok("make".into())],
+            vec![InstructionResult::exception(
+                "abort".into(),
+                ExceptionMessage::new("ABORT_SLIM_SUITE:message:<<stop this suite>>".into()),
+            )],
+            vec![InstructionResult::string("next".into(), "after".into())],
+        ];
+        let mut expected = b"Slim -- V0.5\n".to_vec();
+        for batch in expected_batches {
+            expected.extend_from_slice(batch.to_slim_string().as_bytes());
+        }
+        assert_eq!(expected, output);
     }
 
     #[test]

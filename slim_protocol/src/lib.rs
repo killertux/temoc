@@ -59,6 +59,7 @@ where
         data: &[Instruction],
     ) -> Result<Vec<InstructionResult>, SendInstructionsError> {
         self.writer.write_all(data.to_slim_string().as_bytes())?;
+        self.writer.flush()?;
         Ok(Vec::from_reader(&mut self.reader)?)
     }
 
@@ -332,8 +333,29 @@ pub enum ByeOrSlimInstructions {
 mod test {
     use std::error::Error;
     use std::io::Cursor;
+    use std::{
+        cell::Cell,
+        io::{self, Write},
+        rc::Rc,
+    };
 
     use super::*;
+
+    #[derive(Clone)]
+    struct FlushWriter {
+        flushes: Rc<Cell<usize>>,
+    }
+
+    impl Write for FlushWriter {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushes.set(self.flushes.get() + 1);
+            Ok(())
+        }
+    }
 
     #[test]
     fn test_simple_connection() -> Result<(), Box<dyn Error>> {
@@ -394,6 +416,31 @@ mod test {
             "000276:[000003:000069:[000003:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000006:import:000004:Path:]:000087:[000004:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000004:call:000008:Instance:000008:Function:]:000087:[000004:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000004:call:000008:Instance:000008:Function:]:]000003:bye".to_string(),
             String::from_utf8_lossy(&writer)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn sending_instructions_flushes_before_waiting_for_a_response() -> Result<(), Box<dyn Error>> {
+        let id = Id::from("id");
+        let mut input = b"Slim -- V0.5\n".to_vec();
+        input.extend_from_slice(
+            vec![InstructionResult::ok(id.clone())]
+                .to_slim_string()
+                .as_bytes(),
+        );
+        let flushes = Rc::new(Cell::new(0));
+        let mut connection = SlimConnection::new(
+            Cursor::new(input),
+            FlushWriter {
+                flushes: Rc::clone(&flushes),
+            },
+        )?;
+
+        assert_eq!(
+            vec![InstructionResult::ok(id)],
+            connection.send_instructions(&[])?
+        );
+        assert_eq!(1, flushes.get());
         Ok(())
     }
 }

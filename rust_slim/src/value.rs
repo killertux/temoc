@@ -4,7 +4,7 @@
 //! protocol only has strings and lists, while fixture execution also needs
 //! null, void, and values that stay in-process as object symbols.
 
-use crate::ExecuteMethodError;
+use crate::{ExecuteMethodError, SlimControlException};
 use chrono::NaiveDate;
 use std::{any::Any, cell::RefCell, fmt, rc::Rc};
 
@@ -179,6 +179,12 @@ impl FromSlimValue for SlimValue {
 impl IntoSlimValue for SlimValue {
     fn into_slim_value(self) -> Result<SlimValue, ExecuteMethodError> {
         Ok(self)
+    }
+}
+
+impl IntoSlimValue for SlimControlException {
+    fn into_slim_value(self) -> Result<SlimValue, ExecuteMethodError> {
+        Err(ExecuteMethodError::Control(self))
     }
 }
 
