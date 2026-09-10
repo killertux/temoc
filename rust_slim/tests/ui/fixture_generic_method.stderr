@@ -1,0 +1,5 @@
+error: generic fixture methods are not supported
+ --> tests/ui/fixture_generic_method.rs:7:19
+  |
+7 |     pub fn generic<T>(&self, _value: T) {}
+  |                   ^^^

@@ -73,9 +73,7 @@ impl FromSlimReader for InstructionResult {
 
 impl FromSlimReader for Instruction {
     fn from_reader(reader: &mut impl BufRead) -> Result<Self, FromSlimReaderError> {
-        Ok(instruction_from_values(parse_list_payload(
-            &read_outer_payload(reader)?,
-        )?))
+        instruction_from_values(parse_list_payload(&read_outer_payload(reader)?)?)
     }
 }
 
@@ -88,7 +86,7 @@ impl FromSlimReader for ByeOrSlimInstructions {
 
         let instructions = parse_list_payload(&payload)?
             .into_iter()
-            .map(|instruction| parse_list_payload(&instruction).map(instruction_from_values))
+            .map(|instruction| parse_list_payload(&instruction).and_then(instruction_from_values))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self::Instructions(instructions))
     }
@@ -154,46 +152,58 @@ fn parse_slim_value(value: String) -> Result<SlimValue, FromSlimReaderError> {
     Ok(SlimValue::String(value))
 }
 
-fn instruction_from_values(fields: Vec<String>) -> Instruction {
+fn instruction_from_values(fields: Vec<String>) -> Result<Instruction, FromSlimReaderError> {
     let id = Id::from(fields.first().cloned().unwrap_or_default());
     let malformed = || Instruction::Malformed {
         id: id.clone(),
         fields: fields.clone(),
     };
     let Some(operation) = fields.get(1).map(String::as_str) else {
-        return malformed();
+        return Ok(malformed());
     };
 
     match operation {
-        "import" if fields.len() == 3 => Instruction::Import {
+        "import" if fields.len() == 3 => Ok(Instruction::Import {
             id,
             path: fields[2].clone(),
-        },
-        "make" if fields.len() >= 4 => Instruction::Make {
+        }),
+        "make" if fields.len() >= 4 => Ok(Instruction::Make {
             id,
             instance: fields[2].clone(),
             class: fields[3].clone(),
-            args: fields[4..].to_vec(),
-        },
-        "call" if fields.len() >= 4 => Instruction::Call {
+            args: fields[4..]
+                .iter()
+                .cloned()
+                .map(parse_slim_value)
+                .collect::<Result<_, _>>()?,
+        }),
+        "call" if fields.len() >= 4 => Ok(Instruction::Call {
             id,
             instance: fields[2].clone(),
             function: fields[3].clone(),
-            args: fields[4..].to_vec(),
-        },
-        "callAndAssign" if fields.len() >= 5 => Instruction::CallAndAssign {
+            args: fields[4..]
+                .iter()
+                .cloned()
+                .map(parse_slim_value)
+                .collect::<Result<_, _>>()?,
+        }),
+        "callAndAssign" if fields.len() >= 5 => Ok(Instruction::CallAndAssign {
             id,
             symbol: fields[2].clone(),
             instance: fields[3].clone(),
             function: fields[4].clone(),
-            args: fields[5..].to_vec(),
-        },
-        "assign" if fields.len() == 4 => Instruction::Assign {
+            args: fields[5..]
+                .iter()
+                .cloned()
+                .map(parse_slim_value)
+                .collect::<Result<_, _>>()?,
+        }),
+        "assign" if fields.len() == 4 => Ok(Instruction::Assign {
             id,
             symbol: fields[2].clone(),
-            value: fields[3].clone(),
-        },
-        _ => malformed(),
+            value: parse_slim_value(fields[3].clone())?,
+        }),
+        _ => Ok(malformed()),
     }
 }
 
@@ -455,13 +465,32 @@ mod test {
             Instruction::Assign {
                 id: Id::from("assign"),
                 symbol: "value".into(),
-                value: "42".into(),
+                value: SlimValue::List(vec!["42".into()]),
             },
         ];
         let wire = instructions.to_slim_string();
         assert_eq!(
             ByeOrSlimInstructions::Instructions(instructions),
             ByeOrSlimInstructions::from_reader(&mut Cursor::new(wire.as_bytes()))?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn instruction_arguments_preserve_nested_lists() -> Result<(), Box<dyn Error>> {
+        let instruction = Instruction::Call {
+            id: Id::from("nested"),
+            instance: "fixture".into(),
+            function: "accept".into(),
+            args: vec![SlimValue::List(vec![
+                SlimValue::String("one".into()),
+                SlimValue::List(vec![SlimValue::String("two".into())]),
+            ])],
+        };
+        let wire = instruction.to_slim_string();
+        assert_eq!(
+            instruction,
+            Instruction::from_reader(&mut Cursor::new(wire.as_bytes()))?
         );
         Ok(())
     }

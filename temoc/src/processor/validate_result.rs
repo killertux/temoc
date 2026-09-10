@@ -478,7 +478,7 @@ mod test {
         assert_eq!(
             vec![
                 (format!("Different ID in response. Expected {id_1} but got {id_2}",), Snooze::not_snooze()),
-                (format!("Expected NULL or VOID or NOT FOUND, got OK in test_file.md:0:0",), Snooze::not_snooze()),
+                ("Expected NULL or VOID or NOT FOUND, got OK in test_file.md:0:0".to_string(), Snooze::not_snooze()),
                 (format!("Different ID in response. Expected {id_1} but got {id_2}",), Snooze::not_snooze()),
                 (format!(
                     "Expected NULL or VOID, got OK in test_file.md:{position} for method call TestMethod"
@@ -594,9 +594,9 @@ mod test {
         )?;
         assert_eq!(
             vec![
-                (format!("Expected SET SYMBOL `Symbol`, got OK in test_file.md:0:0 for method call TestMethod"), Snooze::not_snooze()),
-                (format!("Expected SET SYMBOL `Symbol`, got VOID in test_file.md:0:0 for method call TestMethod"), Snooze::not_snooze()),
-                (format!("Expected SET SYMBOL `Symbol`, got Exception `Error` in test_file.md:0:0 for method call TestMethod"), Snooze::not_snooze()),
+                ("Expected SET SYMBOL `Symbol`, got OK in test_file.md:0:0 for method call TestMethod".to_string(), Snooze::not_snooze()),
+                ("Expected SET SYMBOL `Symbol`, got VOID in test_file.md:0:0 for method call TestMethod".to_string(), Snooze::not_snooze()),
+                ("Expected SET SYMBOL `Symbol`, got Exception `Error` in test_file.md:0:0 for method call TestMethod".to_string(), Snooze::not_snooze()),
             ],
             result
         );

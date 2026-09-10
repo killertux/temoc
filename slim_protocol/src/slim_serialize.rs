@@ -106,9 +106,10 @@ impl ToSlimString for Instruction {
                 [id.0.as_str(), "call", instance.as_str(), function.as_str()],
                 args,
             ),
-            Self::Assign { id, symbol, value } => {
-                [id.0.as_str(), "assign", symbol.as_str(), value.as_str()].to_slim_string()
-            }
+            Self::Assign { id, symbol, value } => instruction_parts(
+                [id.0.as_str(), "assign", symbol.as_str()],
+                std::slice::from_ref(value),
+            ),
             Self::CallAndAssign {
                 id,
                 symbol,
@@ -129,8 +130,11 @@ impl ToSlimString for Instruction {
     }
 }
 
-fn instruction_parts<const N: usize>(head: [&str; N], args: &[String]) -> SlimString {
-    let mut values = head.into_iter().map(str::to_owned).collect::<Vec<_>>();
+fn instruction_parts<const N: usize>(head: [&str; N], args: &[SlimValue]) -> SlimString {
+    let mut values = head
+        .into_iter()
+        .map(|value| SlimValue::String(value.into()))
+        .collect::<Vec<_>>();
     values.extend(args.iter().cloned());
     values.to_slim_string()
 }
@@ -217,7 +221,7 @@ mod test {
             id,
             instance: "fixture".into(),
             function: "answer".into(),
-            args: vec!["😀".into()],
+            args: vec![SlimValue::String("😀".into())],
         };
         assert_eq!(
             b"000096:[000005:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000004:call:000007:fixture:000006:answer:000002:\xF0\x9F\x98\x80:]",

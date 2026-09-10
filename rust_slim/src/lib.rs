@@ -119,10 +119,12 @@ pub use server::SlimServer;
 use std::fmt::{Display, Formatter};
 pub use to_slim_result_string::*;
 pub use utils::from_rust_module_path_to_class_path;
+pub use value::{FromSlimValue, IntoSlimValue, SlimObject, SlimValue};
 
 mod server;
 mod to_slim_result_string;
 mod utils;
+mod value;
 
 /// Fixtures must implement this trait to be able to be executed by the slim server.
 /// The `#[fixture]` macro will automatically implement it for the type in the impl block.
@@ -132,8 +134,8 @@ pub trait SlimFixture {
     fn execute_method(
         &mut self,
         method: &str,
-        args: Vec<String>,
-    ) -> Result<String, ExecuteMethodError>;
+        args: Vec<SlimValue>,
+    ) -> Result<SlimValue, ExecuteMethodError>;
 }
 
 /// ClassPath that will be used in the construction of the fixture.
@@ -155,14 +157,14 @@ pub trait ClassPath {
 
 /// Trait used to construct the fixture. It is auto-implemented for fixtures that also implement Default.
 pub trait Constructor {
-    fn construct(args: Vec<String>) -> Self;
+    fn construct(args: Vec<SlimValue>) -> Self;
 }
 
 impl<T> Constructor for T
 where
     T: Default,
 {
-    fn construct(_args: Vec<String>) -> T {
+    fn construct(_args: Vec<SlimValue>) -> T {
         T::default()
     }
 }
@@ -172,10 +174,22 @@ where
 pub enum ExecuteMethodError {
     /// The method might not exists, which should cause a MethodNotFound error.
     MethodNotFound { method: String, class: String },
-    /// We might have an issue parsing the arguments. The implementation made by the `#[fixture]` macro tries to parse each argument using the [FromStr](https://doc.rust-lang.org/std/str/trait.FromStr.html) trait.
+    /// A fixture argument could not be converted through [`FromSlimValue`].
     ArgumentParsingError(String),
     /// And there might be some failure in the method itself, which should cause an ExecutionError.
     ExecutionError(String),
+}
+
+impl ExecuteMethodError {
+    /// Adds the zero-based fixture argument position to a conversion error.
+    pub fn for_argument(self, index: usize) -> Self {
+        match self {
+            Self::ArgumentParsingError(message) => {
+                Self::ArgumentParsingError(format!("{}: {message}", index + 1))
+            }
+            error => error,
+        }
+    }
 }
 
 impl Display for ExecuteMethodError {

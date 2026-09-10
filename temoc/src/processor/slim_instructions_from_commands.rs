@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::fmt::Display;
 use ulid::Ulid;
 
-use slim_protocol::{Id, Instruction};
+use slim_protocol::{Id, Instruction, SlimValue};
 
 use super::markdown_commands::{
     Class, DecisionTableType, MarkdownCommand, MethodName, Position, Snooze, Value,
@@ -75,7 +75,7 @@ pub fn get_instructions_from_commands(
                                     id: id.clone(),
                                     instance: table_instance.clone(),
                                     function: setter_name.0.clone(),
-                                    args: vec![value],
+                                    args: vec![SlimValue::String(value)],
                                 });
                                 expected_result.push((
                                     ExpectedResult::null_or_void(id, position, Some(setter_name)),
@@ -149,8 +149,11 @@ pub fn get_instructions_from_commands(
                             }
                         }
                         DecisionTableType::SingleMethod(ref method_name) => {
-                            let params =
-                                row.setters.into_iter().map(|setter| setter.1 .0).collect();
+                            let params = row
+                                .setters
+                                .into_iter()
+                                .map(|setter| SlimValue::String(setter.1 .0))
+                                .collect();
                             let result = row
                                 .getters
                                 .into_iter()
@@ -472,7 +475,7 @@ mod test {
                 instance: expected_instance,
                 function,
                 args
-            } if *expected_instance == instance && function == "setA" && args == &["1".to_string()]
+            } if *expected_instance == instance && function == "setA" && args == [SlimValue::String("1".into())]
         ));
         assert!(matches!(
             expected_result.remove(0),
@@ -485,7 +488,7 @@ mod test {
                 instance: expected_instance,
                 function,
                 args
-            } if *expected_instance == instance && function == "setB" && args == &["2".to_string()]
+            } if *expected_instance == instance && function == "setB" && args == &[SlimValue::String("2".into())]
         ));
         assert!(matches!(
             &expected_result.remove(0),
@@ -578,7 +581,7 @@ mod test {
                 instance: expected_instance,
                 function,
                 args
-            } if *expected_instance == instance && function == "setA" && args == &["3".to_string()]
+            } if *expected_instance == instance && function == "setA" && args == &[SlimValue::String("3".into())]
         ));
         assert!(matches!(
             &expected_result.remove(0),
@@ -591,7 +594,7 @@ mod test {
                 instance: expected_instance,
                 function,
                 args
-            } if *expected_instance == instance && function == "setB" && args == &["4".to_string()]
+            } if *expected_instance == instance && function == "setB" && args == &[SlimValue::String("4".into())]
         ));
         assert!(matches!(
             &expected_result.remove(0),
@@ -747,7 +750,7 @@ mod test {
                 instance: expected_instance,
                 function,
                 args
-            } if *expected_instance == instance && function == "setA" && args == &["1".to_string()]
+            } if *expected_instance == instance && function == "setA" && args == [SlimValue::String("1".into())]
         ));
         assert!(matches!(
             expected_result.remove(0),
@@ -926,7 +929,7 @@ mod test {
                 instance: expected_instance,
                 function,
                 args
-            } if *expected_instance == instance && function == "Method" && args == &["1".to_string(), "2".to_string()]
+            } if *expected_instance == instance && function == "Method" && args == [SlimValue::String("1".into()), SlimValue::String("2".into())]
         ));
         assert!(matches!(
             expected_result.remove(0),
@@ -963,7 +966,7 @@ mod test {
                 instance: expected_instance,
                 function,
                 args
-            } if *expected_instance == instance && function == "Method" && args == &["3".to_string(), "4".to_string()]
+            } if *expected_instance == instance && function == "Method" && args == [SlimValue::String("3".into()), SlimValue::String("4".into())]
         ));
         assert!(matches!(
             expected_result.remove(0),
