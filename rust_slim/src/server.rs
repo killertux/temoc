@@ -74,6 +74,15 @@ impl<R: Read, W: Write> SlimServer<R, W> {
         let mut results = Vec::new();
         for instruction in instructions {
             match instruction {
+                Instruction::Malformed { id, fields } => {
+                    results.push(InstructionResult::exception(
+                        id,
+                        ExceptionMessage::new(format!(
+                            "MALFORMED_INSTRUCTION [{}]",
+                            fields.join(",")
+                        )),
+                    ));
+                }
                 Instruction::Import { id, path } => {
                     self.imports.push(path);
                     results.push(InstructionResult::ok(id))
@@ -228,7 +237,7 @@ impl<R: Read, W: Write> SlimServer<R, W> {
 
 #[cfg(test)]
 mod tests {
-    use slim_protocol::Id;
+    use slim_protocol::{FromSlimReader, Id, ToSlimString};
     use std::error::Error;
     use std::io::Cursor;
 
@@ -472,6 +481,35 @@ mod tests {
         assert_eq!(
             "Slim -- V0.5\n000048:[000001:000031:[000002:000004:id_1:000002:OK:]:]",
             String::from_utf8_lossy(&output)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_instruction_returns_an_exception_and_keeps_the_batch_running(
+    ) -> Result<(), Box<dyn Error>> {
+        let mut input = vec![
+            vec!["bad_id", "unknown", "field"],
+            vec!["good_id", "import", "TestPath"],
+        ]
+        .to_slim_string()
+        .as_bytes()
+        .to_vec();
+        input.extend_from_slice("bye".to_slim_string().as_bytes());
+
+        let mut output = Vec::new();
+        SlimServer::new(Cursor::new(input), Cursor::new(&mut output)).run()?;
+
+        let mut response = Cursor::new(&output[b"Slim -- V0.5\n".len()..]);
+        assert_eq!(
+            vec![
+                InstructionResult::exception(
+                    Id::from("bad_id"),
+                    ExceptionMessage::new("MALFORMED_INSTRUCTION [bad_id,unknown,field]".into()),
+                ),
+                InstructionResult::ok(Id::from("good_id")),
+            ],
+            Vec::<InstructionResult>::from_reader(&mut response)?
         );
         Ok(())
     }

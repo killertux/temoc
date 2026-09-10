@@ -37,7 +37,7 @@ impl ToSlimResultString for () {
     }
 }
 
-impl<'a> ToSlimResultString for &'a str {
+impl ToSlimResultString for &str {
     fn to_slim_result_string(self) -> Result<String, ExecuteMethodError> {
         Ok(self.to_string())
     }
