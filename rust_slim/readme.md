@@ -64,7 +64,7 @@ accepted. `NaiveDate` uses the protocol’s English `dd-MMM-yyyy` form (for
 example, `10-Oct-1970`), independent of the host locale.
 
 FitNesse’s HTML hash widget is optional in V0.5. Enable it with
-`rust_slim = { version = "0.2", features = ["html-hash"] }` and use `SlimHash` as a fixture
+`rust_slim = { version = "0.3", features = ["html-hash"] }` and use `SlimHash` as a fixture
 argument or return value. It exposes a deterministic `BTreeMap<String,
 String>` through `as_map`/`into_inner` and serializes returns as escaped
 two-column HTML tables. One valid table is converted; invalid or multiple

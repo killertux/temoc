@@ -1,6 +1,6 @@
 [package]
 name = "rust_slim"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A Slim Server for acceptance tests in rust"
@@ -13,9 +13,9 @@ readme = "readme.md"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
-slim_protocol = { path = "../slim_protocol" }
+slim_protocol = { version = "0.3.0", path = "../slim_protocol" }
 convert_case = "0.6"
-rust_slim_macros = { path = "../rust_slim_macros", optional = true }
+rust_slim_macros = { version = "0.2.0", path = "../rust_slim_macros", optional = true }
 thiserror = "1"
 scraper = { version = "0.27", optional = true }
 
