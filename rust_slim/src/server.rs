@@ -115,9 +115,9 @@ pub enum SlimServerOptionsError {
 /// The mutable execution context required by the SliM instruction set.
 pub struct SlimServer<R: Read, W: Write> {
     fixtures: HashMap<String, SlimClosureConstructor>,
-    instances: HashMap<String, SlimObject>,
+    instances: HashMap<String, SlimValue>,
     /// Kept as a vector because library lookup is a stack, not a map.
-    libraries: Vec<(String, SlimObject)>,
+    libraries: Vec<(String, SlimValue)>,
     actors: Vec<SlimObject>,
     symbols: HashMap<String, SlimValue>,
     imports: Vec<String>,
@@ -265,9 +265,11 @@ impl<R: Read, W: Write> SlimServer<R, W> {
         class: String,
         args: Vec<WireSlimValue>,
     ) -> InstructionResult {
-        if let Some(SlimValue::Object(object)) = self.whole_symbol(&class) {
-            self.insert_instance(instance, object);
-            return InstructionResult::ok(id);
+        if let Some(value) = self.whole_symbol(&class) {
+            if !matches!(value, SlimValue::String(_)) {
+                self.insert_instance(instance, value);
+                return InstructionResult::ok(id);
+            }
         }
         let class = self.replace_symbols(&class);
         let Some(constructor) = self.find_fixture(&class) else {
@@ -276,7 +278,7 @@ impl<R: Read, W: Write> SlimServer<R, W> {
         let args = self.parse_wire_values(args);
         match constructor(args) {
             Ok(fixture) => {
-                self.insert_instance(instance, fixture);
+                self.insert_instance(instance, SlimValue::Object(fixture));
                 InstructionResult::ok(id)
             }
             Err(ConstructorError::NoConstructor) => {
@@ -287,16 +289,16 @@ impl<R: Read, W: Write> SlimServer<R, W> {
             }
             Err(ConstructorError::CouldNotInvoke(message)) => exception(
                 id,
-                format!("COULD_NOT_INVOKE_CONSTRUCTOR {class} message:<<{message}>>"),
+                format!("COULD_NOT_INVOKE_CONSTRUCTOR {class} {message}"),
             ),
             Err(ConstructorError::Control(control)) => control_exception(id, control),
         }
     }
 
-    fn insert_instance(&mut self, name: String, object: SlimObject) {
-        self.instances.insert(name.clone(), object.clone());
+    fn insert_instance(&mut self, name: String, value: SlimValue) {
+        self.instances.insert(name.clone(), value.clone());
         if name.starts_with("library") {
-            self.libraries.push((name, object));
+            self.libraries.push((name, value));
         }
     }
 
@@ -340,7 +342,7 @@ impl<R: Read, W: Write> SlimServer<R, W> {
     ) -> Result<SlimValue, ExecuteMethodError> {
         let instance = self.instances.get(instance_name).cloned();
         let direct = if let Some(instance) = &instance {
-            let result = invoke(instance, method, args.clone());
+            let result = invoke_value(instance, method, args.clone());
             if !is_missing_method(&result) {
                 return result;
             }
@@ -356,11 +358,11 @@ impl<R: Read, W: Write> SlimServer<R, W> {
                 class: "SlimHelperLibrary".into(),
             })
         } else {
-            Err(ExecuteMethodError::ExecutionError(format!(
+            return Err(ExecuteMethodError::ExecutionError(format!(
                 "NO_INSTANCE {instance_name}"
-            )))
+            )));
         };
-        if let Some(instance) = instance {
+        if let Some(SlimValue::Object(instance)) = instance {
             if let Some(fixture) = instance.as_fixture() {
                 let sut = fixture
                     .borrow_mut()
@@ -371,7 +373,7 @@ impl<R: Read, W: Write> SlimServer<R, W> {
             }
         }
         for (_, library) in self.libraries.iter().rev() {
-            let result = invoke(library, method, args.clone());
+            let result = invoke_value(library, method, args.clone());
             if !is_missing_method(&result) {
                 return result;
             }
@@ -399,7 +401,8 @@ impl<R: Read, W: Write> SlimServer<R, W> {
                     )
                 })
                 .map(|fixture| {
-                    self.instances.insert("scriptTableActor".into(), fixture);
+                    self.instances
+                        .insert("scriptTableActor".into(), SlimValue::Object(fixture));
                     SlimValue::Void
                 }),
             "clone_symbol" if args.len() == 1 => {
@@ -413,7 +416,10 @@ impl<R: Read, W: Write> SlimServer<R, W> {
     fn actor_fixture(&self) -> Result<SlimObject, ExecuteMethodError> {
         self.instances
             .get("scriptTableActor")
-            .cloned()
+            .and_then(|value| match value {
+                SlimValue::Object(object) => Some(object.clone()),
+                _ => None,
+            })
             .ok_or_else(|| {
                 ExecuteMethodError::ExecutionError("NO_INSTANCE scriptTableActor".into())
             })
@@ -632,6 +638,20 @@ fn invoke(
     result
 }
 
+fn invoke_value(
+    value: &SlimValue,
+    method: &str,
+    args: Vec<SlimValue>,
+) -> Result<SlimValue, ExecuteMethodError> {
+    match value {
+        SlimValue::Object(object) => invoke(object, method, args),
+        value => Err(ExecuteMethodError::MethodNotFound {
+            method: method.into(),
+            class: value.as_text(),
+        }),
+    }
+}
+
 fn is_missing_method(result: &Result<SlimValue, ExecuteMethodError>) -> bool {
     matches!(result, Err(ExecuteMethodError::MethodNotFound { .. }))
 }
@@ -641,7 +661,33 @@ fn is_symbol_name(name: &str) -> bool {
 }
 
 fn exception(id: Id, value: String) -> InstructionResult {
+    let value = standard_exception_envelope(value);
     InstructionResult::exception(id, ExceptionMessage::new(value))
+}
+
+/// FitNesse recognizes standard SliM failures as displayable exception
+/// messages only when they are carried inside `message:<<...>>`.  Batch
+/// control tags deliberately bypass this helper because their raw prefix is
+/// part of the control protocol.
+fn standard_exception_envelope(value: String) -> String {
+    const STANDARD_PREFIXES: [&str; 8] = [
+        "COULD_NOT_INVOKE_CONSTRUCTOR ",
+        "NO_METHOD_IN_CLASS ",
+        "NO_CONSTRUCTOR ",
+        "NO_CONVERTER_FOR_ARGUMENT_NUMBER ",
+        "NO_INSTANCE ",
+        "NO_CLASS ",
+        "MALFORMED_INSTRUCTION ",
+        "TIMED_OUT ",
+    ];
+    if STANDARD_PREFIXES
+        .iter()
+        .any(|prefix| value.starts_with(prefix))
+    {
+        format!("message:<<{value}>>")
+    } else {
+        value
+    }
 }
 
 fn control_exception(id: Id, control: SlimControlException) -> InstructionResult {
@@ -1047,9 +1093,37 @@ mod tests {
 
         assert_eq!(InstructionResult::ok("copy".into()), result[0]);
         assert_eq!(
-            SlimValue::Object(object),
-            SlimValue::Object(server.instances.get("copied").unwrap().clone())
+            Some(&SlimValue::Object(object)),
+            server.instances.get("copied")
         );
+    }
+
+    #[test]
+    fn make_copies_list_and_null_symbols_into_the_instance_dictionary() {
+        let mut server = server();
+        let list = SlimValue::List(vec![SlimValue::String("value".into())]);
+        server.symbols.insert("List".into(), list.clone());
+        server.symbols.insert("Nil".into(), SlimValue::Null);
+
+        let result = server.execute_instructions(vec![
+            Instruction::Make {
+                id: "list".into(),
+                instance: "listInstance".into(),
+                class: "$List".into(),
+                args: vec![],
+            },
+            Instruction::Make {
+                id: "null".into(),
+                instance: "nullInstance".into(),
+                class: "$Nil".into(),
+                args: vec![],
+            },
+        ]);
+
+        assert_eq!(InstructionResult::ok("list".into()), result[0]);
+        assert_eq!(InstructionResult::ok("null".into()), result[1]);
+        assert_eq!(Some(&list), server.instances.get("listInstance"));
+        assert_eq!(Some(&SlimValue::Null), server.instances.get("nullInstance"));
     }
 
     #[test]
@@ -1177,28 +1251,28 @@ mod tests {
         assert_eq!(
             InstructionResult::exception(
                 "class".into(),
-                ExceptionMessage::new("NO_CLASS Nope".into())
+                ExceptionMessage::new("message:<<NO_CLASS Nope>>".into())
             ),
             result[0]
         );
         assert_eq!(
             InstructionResult::exception(
                 "ctor".into(),
-                ExceptionMessage::new("NO_CONSTRUCTOR Library".into())
+                ExceptionMessage::new("message:<<NO_CONSTRUCTOR Library>>".into())
             ),
             result[1]
         );
         assert_eq!(
             InstructionResult::exception(
                 "instance".into(),
-                ExceptionMessage::new("NO_INSTANCE missing".into())
+                ExceptionMessage::new("message:<<NO_INSTANCE missing>>".into())
             ),
             result[2]
         );
         assert_eq!(
             InstructionResult::exception(
                 "conversion".into(),
-                ExceptionMessage::new("NO_CONVERTER_FOR_ARGUMENT_NUMBER i64".into())
+                ExceptionMessage::new("message:<<NO_CONVERTER_FOR_ARGUMENT_NUMBER i64>>".into())
             ),
             result[3]
         );
@@ -1206,7 +1280,7 @@ mod tests {
             InstructionResult::exception(
                 "invocation".into(),
                 ExceptionMessage::new(
-                    "COULD_NOT_INVOKE_CONSTRUCTOR FailingFixture message:<<constructor failed>>"
+                    "message:<<COULD_NOT_INVOKE_CONSTRUCTOR FailingFixture constructor failed>>"
                         .into()
                 )
             ),
@@ -1215,7 +1289,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_targets_still_fall_back_to_libraries_and_preserve_method_spelling() {
+    fn missing_targets_return_no_instance_and_preserve_method_spelling() {
         let mut server = server();
         let result = server.execute_instructions(vec![
             Instruction::Make {
@@ -1241,13 +1315,18 @@ mod tests {
         ]);
 
         assert_eq!(
-            InstructionResult::string("fallback".into(), "newest".into()),
+            InstructionResult::exception(
+                "fallback".into(),
+                ExceptionMessage::new("message:<<NO_INSTANCE missing>>".into())
+            ),
             result[2]
         );
         assert_eq!(
             InstructionResult::exception(
                 "method".into(),
-                ExceptionMessage::new("NO_METHOD_IN_CLASS missingMethod Fixture".into())
+                ExceptionMessage::new(
+                    "message:<<NO_METHOD_IN_CLASS missingMethod Fixture>>".into()
+                )
             ),
             result[3]
         );
@@ -1280,7 +1359,8 @@ mod tests {
             InstructionResult::exception(
                 "bad".into(),
                 ExceptionMessage::new(
-                    "MALFORMED_INSTRUCTION [bad,callAndAssign,Bad1,fixture,echo,value]".into()
+                    "message:<<MALFORMED_INSTRUCTION [bad,callAndAssign,Bad1,fixture,echo,value]>>"
+                        .into()
                 )
             ),
             result[1]
@@ -1371,7 +1451,7 @@ mod tests {
         assert_eq!(
             InstructionResult::exception(
                 "bad".into(),
-                ExceptionMessage::new("MALFORMED_INSTRUCTION [bad,unknown]".into())
+                ExceptionMessage::new("message:<<MALFORMED_INSTRUCTION [bad,unknown]>>".into())
             ),
             result[0]
         );
@@ -1512,7 +1592,7 @@ mod tests {
         );
         server.instances.insert(
             "failing".into(),
-            SlimObject::fixture(FailingFixture, "FailingFixture"),
+            SlimValue::Object(SlimObject::fixture(FailingFixture, "FailingFixture")),
         );
         let result = server.execute_instructions(vec![
             Instruction::Import {
@@ -1538,14 +1618,14 @@ mod tests {
         assert_eq!(
             InstructionResult::exception(
                 "call".into(),
-                ExceptionMessage::new("TIMED_OUT 0".into()),
+                ExceptionMessage::new("message:<<TIMED_OUT 0>>".into()),
             ),
             result[2]
         );
         assert_eq!(
             InstructionResult::exception(
                 "call-and-assign".into(),
-                ExceptionMessage::new("TIMED_OUT 0".into()),
+                ExceptionMessage::new("message:<<TIMED_OUT 0>>".into()),
             ),
             result[3]
         );

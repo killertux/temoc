@@ -20,13 +20,12 @@ pub fn build_slim_server_connector(
         })
     } else {
         let mut rng = rand::thread_rng();
+        let available = u32::from(u16::MAX) - u32::from(port) + 1;
+        let pool_size = u32::from(pool_size.max(1)).min(available) as u16;
+        let offset = rng.gen_range(0..pool_size);
         Box::new(TcpSlimServerConnector {
             command,
-            port: CyclePort::new(
-                rng.gen_range(port..(port + (pool_size - 1))),
-                port,
-                pool_size,
-            ),
+            port: CyclePort::new(port + offset, port, pool_size),
             pipe_output,
         })
     }
@@ -70,7 +69,7 @@ impl SlimServerConnector for TcpSlimServerConnector {
         let stdout = build_stdio(self.pipe_output);
         let stderr = build_stdio(self.pipe_output);
         self.port.new_port();
-        let child = spawn_server(
+        let mut child = spawn_server(
             &self.command,
             self.port.to_port(),
             stdout,
@@ -86,6 +85,8 @@ impl SlimServerConnector for TcpSlimServerConnector {
                 break tcp_stream;
             }
             if start.elapsed() > time_limit {
+                let _ = child.kill();
+                let _ = child.wait();
                 bail!("Failed to connect to slim server");
             }
             sleep(sleep_time);
@@ -225,7 +226,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::drain_slim_stderr;
+    use super::{build_slim_server_connector, drain_slim_stderr};
     use std::io::Cursor;
 
     #[test]
@@ -255,5 +256,10 @@ mod tests {
 
         assert!(stdout.is_empty());
         assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn tcp_connector_accepts_a_single_port_pool() {
+        let _connector = build_slim_server_connector("false".into(), 8085, 1, false);
     }
 }

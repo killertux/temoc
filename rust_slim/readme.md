@@ -2,11 +2,11 @@
 
 Develop Slim Fixtures for rust applications. Based on the [Slim Protocol](https://fitnesse.org/FitNesse/UserGuide/WritingAcceptanceTests/SliM/SlimProtocol.html) of fitnesse [fitnesse](https://fitnesse.org) .
 
-This is not 100% compliant with the SliM protocol yet. The optional HTML hash
-converter and full FitNesse end-to-end compatibility coverage remain. The
-runtime intentionally provides an observational timeout instead of
-isolation-backed hard cancellation, and explicit output tunnels instead of
-transparent process-wide stdio capture; those limitations are described below.
+See the maintained [V0.5 conformance matrix](CONFORMANCE.md) for supported,
+optional, and intentionally excluded behavior. The runtime intentionally
+provides an observational timeout instead of isolation-backed hard
+cancellation, and explicit output tunnels instead of transparent process-wide
+stdio capture; those limitations are described below.
 
 This is currently in an unstable version. The general API can change in the next versions.
 
@@ -55,3 +55,34 @@ without platform-specific descriptor manipulation. Write intentional fixture
 output to `OutputTunnel::stdout(std::io::stderr())` or
 `OutputTunnel::stderr(std::io::stderr())`; it emits the V0.5 `SOUT :`/
 `SOUT.:` and `SERR :`/`SERR.:` prefixes line by line.
+
+## Values and optional HTML hashes
+
+`Vec<T>` and arrays accept either recursive SliM wire lists or the documented
+Java-style textual form such as `[one, two]`; nested textual lists are also
+accepted. `NaiveDate` uses the protocol’s English `dd-MMM-yyyy` form (for
+example, `10-Oct-1970`), independent of the host locale.
+
+FitNesse’s HTML hash widget is optional in V0.5. Enable it with
+`rust_slim = { version = "0.2", features = ["html-hash"] }` and use `SlimHash` as a fixture
+argument or return value. It exposes a deterministic `BTreeMap<String,
+String>` through `as_map`/`into_inner` and serializes returns as escaped
+two-column HTML tables. One valid table is converted; invalid or multiple
+tables become an empty map, and malformed rows are ignored.
+
+```rust,ignore
+use rust_slim::{fixture, SlimHash};
+
+# struct Fixture;
+#[fixture]
+impl Fixture {
+    pub fn lookup(&self, values: SlimHash) -> String {
+        values.as_map().get("name").cloned().unwrap_or_default()
+    }
+}
+```
+
+FitNesse recognizes standard protocol errors when they are enclosed in
+`message:<<…>>`. `rust_slim` emits that envelope for standard errors such as
+`NO_METHOD_IN_CLASS` and `TIMED_OUT`; abort and ignore tags retain their raw
+control prefixes and optional message suffix.

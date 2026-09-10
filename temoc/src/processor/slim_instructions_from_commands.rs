@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::fmt::Display;
 use ulid::Ulid;
 
+use slim_protocol::InstructionResultValue;
 use slim_protocol::{Id, Instruction, SlimValue};
 
 use super::markdown_commands::{
@@ -292,6 +293,9 @@ pub enum ExpectedResultValue {
     String(String),
     SetSymbol(String),
     Symbol(String),
+    /// A resolved client-side symbol retains the complete recursive wire
+    /// value returned by a prior `callAndAssign`.
+    Result(InstructionResultValue),
     List(Vec<ExpectedResultValue>),
 }
 
@@ -308,6 +312,7 @@ impl Display for ExpectedResultValue {
             ExpectedResultValue::String(value) => write!(f, "`{}`", value),
             ExpectedResultValue::SetSymbol(value) => write!(f, "SET SYMBOL `{}`", value),
             ExpectedResultValue::Symbol(value) => write!(f, "SYMBOL `{}`", value),
+            ExpectedResultValue::Result(value) => write!(f, "{value}"),
             ExpectedResultValue::List(value) => {
                 write!(
                     f,

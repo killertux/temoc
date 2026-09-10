@@ -48,6 +48,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
+          args: --workspace --all-features
 
   fmt:
     name: Rustfmt
@@ -99,7 +100,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: clippy
-          args: -- -D warnings
+          args: --workspace --all-targets --all-features -- -D warnings
   examples:
     name: Examples
     runs-on: ubuntu-latest
@@ -121,4 +122,4 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: run
-          args: -- -c Config.toml.example
+          args: --bin temoc -- -c Config.toml.example

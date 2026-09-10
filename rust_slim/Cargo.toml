@@ -17,6 +17,7 @@ slim_protocol = { path = "../slim_protocol" }
 convert_case = "0.6"
 rust_slim_macros = { path = "../rust_slim_macros", optional = true }
 thiserror = "1"
+scraper = { version = "0.27", optional = true }
 
 [dev-dependencies]
 anyhow = "1"
@@ -24,3 +25,15 @@ trybuild = "1"
 
 [features]
 macros = ["dep:rust_slim_macros"]
+# The SliM HTML-table hash conversion is optional in V0.5.  Keeping it
+# feature-gated avoids adding HTML parsing work to fixtures that do not use
+# FitNesse's hash widget.
+html-hash = ["dep:scraper"]
+conformance-tests = []
+
+[[bin]]
+name = "slim_conformance_server"
+path = "tests/support/slim_conformance_server.rs"
+test = false
+bench = false
+required-features = ["conformance-tests"]

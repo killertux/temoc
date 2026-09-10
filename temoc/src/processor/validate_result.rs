@@ -32,7 +32,7 @@ pub fn validate_result(
             continue;
         }
         if let ExpectedResultValue::Symbol(symbol) = expected_result.value {
-            expected_result.value = ExpectedResultValue::String(
+            expected_result.value = ExpectedResultValue::Result(
                 state
                     .get_symbol(&symbol)
                     .ok_or_else(|| anyhow!("Symbol `{}` not found", symbol))?
@@ -50,10 +50,10 @@ pub fn validate_result(
                 snooze.clone(),
             ));
         }
-        if let (ExpectedResultValue::SetSymbol(symbol), InstructionResultValue::String(value)) =
-            (expected_result.value, result.value)
-        {
-            state.set_symbol(symbol, value);
+        if let ExpectedResultValue::SetSymbol(symbol) = expected_result.value {
+            if !matches!(result.value, InstructionResultValue::Exception(_)) {
+                state.set_symbol(symbol, result.value);
+            }
         }
     }
     Ok(failures)
@@ -108,7 +108,9 @@ impl PartialEq<InstructionResultValue> for ExpectedResultValue {
                 }
                 true
             }
-            (ExpectedResultValue::SetSymbol(_), InstructionResultValue::String(_)) => true,
+            (ExpectedResultValue::SetSymbol(_), InstructionResultValue::Exception(_)) => false,
+            (ExpectedResultValue::SetSymbol(_), _) => true,
+            (ExpectedResultValue::Result(expected), actual) => expected == actual,
             _ => false,
         }
     }
@@ -129,6 +131,7 @@ fn failure_expected_result_detail_message(
         | ExpectedResultValue::String(_)
         | ExpectedResultValue::SetSymbol(_)
         | ExpectedResultValue::Symbol(_)
+        | ExpectedResultValue::Result(_)
         | ExpectedResultValue::List(_) => match method_name {
             Some(method_name) => format!(
                 "in {file_path}:{position} for method call {}",
@@ -544,7 +547,10 @@ mod test {
             &mut state,
         )?;
         assert!(result.is_empty());
-        assert_eq!("Value", state.get_symbol("Symbol").unwrap());
+        assert_eq!(
+            &InstructionResultValue::String("Value".into()),
+            state.get_symbol("Symbol").unwrap()
+        );
         Ok(())
     }
 
@@ -594,8 +600,6 @@ mod test {
         )?;
         assert_eq!(
             vec![
-                ("Expected SET SYMBOL `Symbol`, got OK in test_file.md:0:0 for method call TestMethod".to_string(), Snooze::not_snooze()),
-                ("Expected SET SYMBOL `Symbol`, got VOID in test_file.md:0:0 for method call TestMethod".to_string(), Snooze::not_snooze()),
                 ("Expected SET SYMBOL `Symbol`, got Exception `Error` in test_file.md:0:0 for method call TestMethod".to_string(), Snooze::not_snooze()),
             ],
             result
@@ -665,6 +669,44 @@ mod test {
             &mut state,
         )?;
         assert!(result.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn symbols_preserve_and_compare_nested_lists() -> Result<()> {
+        let id = Id::new();
+        let position = Position::new(0, 0);
+        let method = MethodName("nested".into(), position.clone());
+        let nested = InstructionResultValue::List(vec![
+            InstructionResultValue::String("é".into()),
+            InstructionResultValue::List(vec![InstructionResultValue::String("😀".into())]),
+        ]);
+        let mut state = State::default();
+        let failures = validate_result(
+            "test_file.md",
+            vec![
+                (
+                    ExpectedResult::set_symbol(
+                        id.clone(),
+                        position.clone(),
+                        method.clone(),
+                        "Nested".into(),
+                    ),
+                    Snooze::not_snooze(),
+                ),
+                (
+                    ExpectedResult::symbol(id.clone(), position, method, "Nested".into()),
+                    Snooze::not_snooze(),
+                ),
+            ],
+            vec![
+                InstructionResult::new(id.clone(), nested.clone()),
+                InstructionResult::new(id, nested.clone()),
+            ],
+            &mut state,
+        )?;
+        assert!(failures.is_empty());
+        assert_eq!(Some(&nested), state.get_symbol("Nested"));
         Ok(())
     }
 }
