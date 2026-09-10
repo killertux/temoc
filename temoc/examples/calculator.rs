@@ -47,7 +47,7 @@ mod fixtures {
 }
 
 fn main() -> Result<()> {
-    let port = args().skip(1).next().unwrap_or("8085".to_string());
+    let port = args().nth(1).unwrap_or("8085".to_string());
     let mut server = build_server(&port)?;
 
     server.add_fixture::<CalculatorFixture>();

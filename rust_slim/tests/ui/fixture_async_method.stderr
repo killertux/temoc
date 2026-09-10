@@ -1,0 +1,5 @@
+error: const, async, unsafe, extern, and variadic fixture methods are not supported
+ --> tests/ui/fixture_async_method.rs:7:9
+  |
+7 |     pub async fn asynchronous(&self) {}
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

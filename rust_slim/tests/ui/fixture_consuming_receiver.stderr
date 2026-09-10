@@ -1,0 +1,5 @@
+error: fixture methods must use an &self or &mut self receiver
+ --> tests/ui/fixture_consuming_receiver.rs:7:22
+  |
+7 |     pub fn consuming(self) {}
+  |                      ^^^^

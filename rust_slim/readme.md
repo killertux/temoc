@@ -12,3 +12,12 @@ It does not support using the STOUD and STDIN for comunication.
 This is currently in an unstable version. The general API can change in the next versions.
 
 For more details, take a look at the [documentation](https://docs.rs/rust_slim/latest/rust_slim/)
+
+## Migrating manually implemented fixtures
+
+`SlimFixture::execute_method` now receives `Vec<SlimValue>` and returns
+`Result<SlimValue, ExecuteMethodError>`. Use `FromSlimValue` to convert each
+argument and `IntoSlimValue` to convert the method result. These conversions
+preserve protocol lists, null, void, and in-process object handles. The old
+`ToSlimResultString` trait remains available as a string conversion helper,
+but it does not preserve those structured values.

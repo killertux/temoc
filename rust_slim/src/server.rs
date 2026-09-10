@@ -1,8 +1,8 @@
-use crate::{ClassPath, Constructor, SlimFixture};
+use crate::{ClassPath, Constructor, SlimFixture, SlimValue};
 use convert_case::{Case, Casing};
 use slim_protocol::{
     ByeOrSlimInstructions, ExceptionMessage, FromSlimReader, FromSlimReaderError, Instruction,
-    InstructionResult, InstructionResultValue, ToSlimString,
+    InstructionResult, InstructionResultValue, SlimValue as WireSlimValue, ToSlimString,
 };
 use std::{
     collections::HashMap,
@@ -19,14 +19,14 @@ pub enum SlimServerError {
     FromSlimReaderError(#[from] FromSlimReaderError),
 }
 
-pub type SlimClosureConstructor = Box<dyn Fn(Vec<String>) -> Box<dyn SlimFixture>>;
+pub type SlimClosureConstructor = Box<dyn Fn(Vec<SlimValue>) -> Box<dyn SlimFixture>>;
 
 /// The SlimServer responsible to get the Slim commands and execute against the Fixtures.
 pub struct SlimServer<R: Read, W: Write> {
     fixtures: HashMap<String, SlimClosureConstructor>,
     instances: HashMap<String, Box<dyn SlimFixture>>,
     libraries: HashMap<String, Box<dyn SlimFixture>>,
-    symbols: HashMap<String, String>,
+    symbols: HashMap<String, SlimValue>,
     imports: Vec<String>,
     reader: BufReader<R>,
     writer: W,
@@ -50,8 +50,8 @@ impl<R: Read, W: Write> SlimServer<R, W> {
     pub fn add_fixture<T: ClassPath + Constructor + SlimFixture + 'static>(&mut self) {
         self.fixtures.insert(
             T::class_path(),
-            Box::new(|args: Vec<String>| Box::new(T::construct(args)) as Box<dyn SlimFixture>)
-                as Box<dyn Fn(Vec<String>) -> Box<dyn SlimFixture>>,
+            Box::new(|args: Vec<SlimValue>| Box::new(T::construct(args)) as Box<dyn SlimFixture>)
+                as Box<dyn Fn(Vec<SlimValue>) -> Box<dyn SlimFixture>>,
         );
     }
 
@@ -101,7 +101,7 @@ impl<R: Read, W: Write> SlimServer<R, W> {
                         ));
                         continue;
                     };
-                    let args = self.parse_symbols(args);
+                    let args = self.parse_wire_values(args);
                     if instance.starts_with("library") {
                         self.libraries.insert(instance, fixture(args));
                     } else {
@@ -115,7 +115,7 @@ impl<R: Read, W: Write> SlimServer<R, W> {
                     function,
                     args,
                 } => {
-                    let args = self.parse_symbols(args);
+                    let args = self.parse_wire_values(args);
                     let instances = if instance.starts_with("library") {
                         &mut self.libraries
                     } else {
@@ -131,22 +131,7 @@ impl<R: Read, W: Write> SlimServer<R, W> {
                     let function = function.to_case(Case::Snake);
 
                     match instance.execute_method(&function, args) {
-                        Ok(value) if value == "/__VOID__/" => {
-                            results.push(InstructionResult::void(id))
-                        }
-                        Ok(value) if value.starts_with("/__ARRAY[") && value.ends_with("]__/") => {
-                            let value = value
-                                .trim_start_matches("/__ARRAY[")
-                                .trim_end_matches("]__/");
-                            results.push(InstructionResult::list(
-                                id,
-                                value
-                                    .split("__|__")
-                                    .map(|value| InstructionResultValue::String(value.into()))
-                                    .collect(),
-                            ))
-                        }
-                        Ok(value) => results.push(InstructionResult::string(id, value)),
+                        Ok(value) => results.push(instruction_result_for_value(id, value)),
                         Err(error) => results.push(InstructionResult::exception(
                             id,
                             ExceptionMessage::new(error.to_string()),
@@ -160,7 +145,7 @@ impl<R: Read, W: Write> SlimServer<R, W> {
                     function,
                     args,
                 } => {
-                    let args = self.parse_symbols(args);
+                    let args = self.parse_wire_values(args);
                     let instances = if instance.starts_with("library") {
                         &mut self.libraries
                     } else {
@@ -176,12 +161,8 @@ impl<R: Read, W: Write> SlimServer<R, W> {
                     let function = function.to_case(Case::Snake);
                     let symbol = symbol.strip_prefix('$').unwrap_or(&symbol).into();
                     match instance.execute_method(&function, args) {
-                        Ok(value) if value == "/__VOID__/" => {
-                            results.push(InstructionResult::void(id));
-                            self.symbols.insert(symbol, "".into());
-                        }
                         Ok(value) => {
-                            results.push(InstructionResult::string(id, value.clone()));
+                            results.push(instruction_result_for_value(id, value.clone()));
                             self.symbols.insert(symbol, value);
                         }
                         Err(error) => results.push(InstructionResult::exception(
@@ -192,6 +173,7 @@ impl<R: Read, W: Write> SlimServer<R, W> {
                 }
                 Instruction::Assign { id, symbol, value } => {
                     let symbol = symbol.strip_prefix('$').unwrap_or(&symbol).into();
+                    let value = self.parse_wire_value(value);
                     self.symbols.insert(symbol, value);
                     results.push(InstructionResult::ok(id))
                 }
@@ -213,25 +195,67 @@ impl<R: Read, W: Write> SlimServer<R, W> {
         None
     }
 
-    fn parse_symbols(&self, args: Vec<String>) -> Vec<String> {
-        args.into_iter().map(|arg| self.parse_symbol(arg)).collect()
+    fn parse_wire_values(&self, args: Vec<WireSlimValue>) -> Vec<SlimValue> {
+        args.into_iter()
+            .map(|arg| self.parse_wire_value(arg))
+            .collect()
+    }
+
+    fn parse_wire_value(&self, value: WireSlimValue) -> SlimValue {
+        match value {
+            WireSlimValue::String(value) if value == "null" => SlimValue::Null,
+            WireSlimValue::String(value) => SlimValue::String(self.parse_symbol(value)),
+            WireSlimValue::List(values) => SlimValue::List(
+                values
+                    .into_iter()
+                    .map(|value| self.parse_wire_value(value))
+                    .collect(),
+            ),
+        }
     }
 
     fn parse_symbol(&self, mut value: String) -> String {
         while let Some((before, after)) = value.split_once('$') {
             if let Some((name, rest)) = after.split_once(' ') {
                 let mut new_value = String::from(before);
-                new_value += self.symbols.get(name).unwrap_or(&String::new());
+                new_value += &self
+                    .symbols
+                    .get(name)
+                    .map(SlimValue::as_text)
+                    .unwrap_or_default();
                 new_value += " ";
                 new_value += rest;
                 value = new_value;
             } else {
                 let mut new_value = String::from(before);
-                new_value += self.symbols.get(after).unwrap_or(&String::new());
+                new_value += &self
+                    .symbols
+                    .get(after)
+                    .map(SlimValue::as_text)
+                    .unwrap_or_default();
                 value = new_value;
             }
         }
         value
+    }
+}
+
+fn instruction_result_for_value(id: slim_protocol::Id, value: SlimValue) -> InstructionResult {
+    match value {
+        SlimValue::Void => InstructionResult::void(id),
+        value => InstructionResult::new(id, instruction_result_value(value)),
+    }
+}
+
+fn instruction_result_value(value: SlimValue) -> InstructionResultValue {
+    match value {
+        SlimValue::String(value) => InstructionResultValue::String(value),
+        SlimValue::List(values) => {
+            InstructionResultValue::List(values.into_iter().map(instruction_result_value).collect())
+        }
+        SlimValue::Null => InstructionResultValue::String("null".into()),
+        SlimValue::Void => InstructionResultValue::Void,
+        SlimValue::Object(value) => InstructionResultValue::String(value.display_value().into()),
     }
 }
 
@@ -431,6 +455,62 @@ mod tests {
     }
 
     #[test]
+    fn calls_preserve_nested_lists_and_call_and_assign_keeps_the_typed_value(
+    ) -> Result<(), Box<dyn Error>> {
+        let reader = Cursor::new(Vec::new());
+        let writer = Cursor::new(Vec::new());
+        let mut slim_server = SlimServer::new(reader, writer);
+        slim_server.add_fixture::<TestFixture>();
+        let nested = WireSlimValue::List(vec![
+            WireSlimValue::String("one".into()),
+            WireSlimValue::List(vec![WireSlimValue::String("two".into())]),
+        ]);
+        let result = slim_server.execute_instructions(vec![
+            Instruction::Make {
+                id: Id::from("make"),
+                instance: "fixture".into(),
+                class: "Test.TestFixture".into(),
+                args: Vec::new(),
+            },
+            Instruction::CallAndAssign {
+                id: Id::from("call"),
+                symbol: "$nested".into(),
+                instance: "fixture".into(),
+                function: "nested".into(),
+                args: vec![nested],
+            },
+            Instruction::Call {
+                id: Id::from("embedded"),
+                instance: "fixture".into(),
+                function: "echo".into(),
+                args: vec!["prefix $nested suffix".into()],
+            },
+        ]);
+
+        assert_eq!(
+            InstructionResult::list(
+                Id::from("call"),
+                vec![InstructionResultValue::List(vec![
+                    InstructionResultValue::String("one".into()),
+                    InstructionResultValue::List(vec![InstructionResultValue::String(
+                        "two".into()
+                    )]),
+                ])],
+            ),
+            result[1]
+        );
+        assert!(matches!(
+            slim_server.symbols.get("nested"),
+            Some(SlimValue::List(_))
+        ));
+        assert_eq!(
+            InstructionResult::string(Id::from("embedded"), "prefix [[one, [two]]] suffix".into()),
+            result[2]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn execute_assign() -> Result<(), Box<dyn Error>> {
         let mut vec = Vec::new();
         let reader = Cursor::new(&mut vec);
@@ -587,11 +667,9 @@ mod tests {
         );
         slim_server.imports.push("Namespace".into());
 
-        let mut result = slim_server
-            .find_fixture("ExamplePathFixutre".into())
-            .unwrap()(Vec::new());
+        let mut result = slim_server.find_fixture("ExamplePathFixutre").unwrap()(Vec::new());
         assert_eq!(
-            Ok("First".to_string()),
+            Ok(SlimValue::String("First".to_string())),
             result.execute_method("", Vec::new())
         );
     }
@@ -616,11 +694,9 @@ mod tests {
         slim_server.imports.push("Namespace2".into());
         slim_server.imports.push("Namespace1".into());
 
-        let mut result = slim_server
-            .find_fixture("ExamplePathFixutre".into())
-            .unwrap()(Vec::new());
+        let mut result = slim_server.find_fixture("ExamplePathFixutre").unwrap()(Vec::new());
         assert_eq!(
-            Ok("Second".to_string()),
+            Ok(SlimValue::String("Second".to_string())),
             result.execute_method("", Vec::new())
         );
     }
@@ -628,30 +704,37 @@ mod tests {
     fn add_test_fixture_with_path<R: Read, W: Write>(
         server: &mut SlimServer<R, W>,
         class_path: impl Into<String>,
-        return_value: Result<String, crate::ExecuteMethodError>,
+        return_value: Result<SlimValue, crate::ExecuteMethodError>,
     ) {
         server.fixtures.insert(
             class_path.into(),
-            Box::new(move |_: Vec<String>| {
+            Box::new(move |_: Vec<SlimValue>| {
                 Box::new(TestFixture {
                     return_value: return_value.clone(),
                 }) as Box<dyn SlimFixture>
-            }) as Box<dyn Fn(Vec<String>) -> Box<dyn SlimFixture>>,
+            }) as Box<dyn Fn(Vec<SlimValue>) -> Box<dyn SlimFixture>>,
         );
     }
 
     struct TestFixture {
-        return_value: Result<String, crate::ExecuteMethodError>,
+        return_value: Result<SlimValue, crate::ExecuteMethodError>,
     }
 
     impl SlimFixture for TestFixture {
         fn execute_method(
             &mut self,
             method: &str,
-            parms: Vec<String>,
-        ) -> Result<String, crate::ExecuteMethodError> {
+            parms: Vec<SlimValue>,
+        ) -> Result<SlimValue, crate::ExecuteMethodError> {
             match method {
-                "echo" => Ok(parms.join(",")),
+                "echo" => Ok(SlimValue::String(
+                    parms
+                        .into_iter()
+                        .map(|value| value.as_text())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                )),
+                "nested" => Ok(SlimValue::List(parms)),
                 _ => self.return_value.clone(),
             }
         }
@@ -664,9 +747,9 @@ mod tests {
     }
 
     impl Constructor for TestFixture {
-        fn construct(_: Vec<String>) -> Self {
+        fn construct(_: Vec<SlimValue>) -> Self {
             Self {
-                return_value: Ok("Value".to_string()),
+                return_value: Ok(SlimValue::String("Value".to_string())),
             }
         }
     }

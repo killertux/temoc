@@ -160,6 +160,18 @@ pub enum SlimValue {
     List(Vec<SlimValue>),
 }
 
+impl From<String> for SlimValue {
+    fn from(value: String) -> Self {
+        Self::String(value)
+    }
+}
+
+impl From<&str> for SlimValue {
+    fn from(value: &str) -> Self {
+        Self::String(value.into())
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Instruction {
     /// An instruction list with an unknown operation or an invalid number of
@@ -176,17 +188,13 @@ pub enum Instruction {
         id: Id,
         instance: String,
         class: String,
-        /// Instruction arguments remain string-only until the typed runtime
-        /// value model is introduced.
-        args: Vec<String>,
+        args: Vec<SlimValue>,
     },
     Call {
         id: Id,
         instance: String,
         function: String,
-        /// Instruction arguments remain string-only until the typed runtime
-        /// value model is introduced.
-        args: Vec<String>,
+        args: Vec<SlimValue>,
     },
     #[allow(dead_code)]
     CallAndAssign {
@@ -194,15 +202,13 @@ pub enum Instruction {
         symbol: String,
         instance: String,
         function: String,
-        /// Instruction arguments remain string-only until the typed runtime
-        /// value model is introduced.
-        args: Vec<String>,
+        args: Vec<SlimValue>,
     },
     #[allow(dead_code)]
     Assign {
         id: Id,
         symbol: String,
-        value: String,
+        value: SlimValue,
     },
 }
 

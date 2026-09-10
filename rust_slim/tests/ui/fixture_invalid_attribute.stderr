@@ -1,0 +1,5 @@
+error: expected string literal
+ --> tests/ui/fixture_invalid_attribute.rs:5:11
+  |
+5 | #[fixture(42)]
+  |           ^^

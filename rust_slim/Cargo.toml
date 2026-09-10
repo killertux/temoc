@@ -12,6 +12,7 @@ readme = "readme.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 slim_protocol = { path = "../slim_protocol" }
 convert_case = "0.6"
 rust_slim_macros = { path = "../rust_slim_macros", optional = true }
@@ -19,6 +20,7 @@ thiserror = "1"
 
 [dev-dependencies]
 anyhow = "1"
+trybuild = "1"
 
 [features]
 macros = ["dep:rust_slim_macros"]
