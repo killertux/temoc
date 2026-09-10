@@ -55,67 +55,18 @@
 //! Than, we need to add an entrypoint to the slim server so we can run it. There are lot of ways of doing this. One is by creating an example in your project.
 //!
 //! So create and example file called `calculator.rs` and add this:
-//! ```rust
-//! use rust_slim::SlimServer;
-//! use std::net::TcpListener;
-//! use anyhow::Result;
+//! ```rust,no_run
+//! use rust_slim::PortSlimServer;
 //! use std::env::args;
-//! # use std::net::TcpStream;
-//! # use std::thread::spawn;
-//! # use std::io::Write;
-//! # use rust_slim::fixture;
 //!
+//! # use anyhow::Result;
+//! # use rust_slim::fixture;
 //! # #[derive(Default)]
-//! # pub struct Calculator {
-//! #     a: i64,
-//! #     b: i64,
-//! # }
-//! #
+//! # pub struct Calculator;
 //! # #[fixture]
-//! # impl Calculator {
-//! #     #[slim(constructor)]
-//! #     pub fn new() -> Self {
-//! #         Self::default()
-//! #     }
-//! #
-//! #     pub fn set_a(&mut self, a: i64) {
-//! #         self.a = a
-//! #     }
-//! #
-//! #     pub fn set_b(&mut self, b: i64) {
-//! #         self.b = b
-//! #     }
-//! #
-//! #     pub fn sum(&self) -> i64 {
-//! #         self.a + self.b
-//! #     }
-//! #
-//! #     pub fn mul(&self) -> i64 {
-//! #         self.a * self.b
-//! #     }
-//! #
-//! #     pub fn sub(&self) -> i64 {
-//! #         self.a - self.b
-//! #     }
-//! #
-//! #     pub fn div(&self) -> i64 {
-//! #         self.a / self.b
-//! #     }
-//! # }
-//! #
+//! # impl Calculator {}
 //! fn main() -> Result<()> {
-//! #   spawn(|| {
-//! #        loop {
-//! #            if let Ok(mut stream) = TcpStream::connect("127.0.0.1:8085") {
-//! #                stream.write_all(b"000003:bye").unwrap();
-//! #                break;
-//! #            }
-//! #        }  
-//! #    });
-//!     let port = args().skip(1).next().unwrap_or("8085".to_string());
-//!     let listener = TcpListener::bind(format!("0.0.0.0:{port}").to_string()).expect("Error");
-//!     let (stream, _) = listener.accept()?;
-//!     let mut server = SlimServer::new(stream.try_clone()?, stream);
+//!     let mut server = PortSlimServer::listen_from_args(args().skip(1))?;
 //!     server.add_fixture::<Calculator>();
 //!     server.run()?;
 //!     Ok(())
@@ -125,7 +76,10 @@
 
 #[cfg(feature = "macros")]
 pub use rust_slim_macros::*;
-pub use server::SlimServer;
+pub use server::{
+    OutputTunnel, PortSlimServer, SlimServer, SlimServerError, SlimServerOptions,
+    SlimServerOptionsError,
+};
 use std::fmt::{Display, Formatter};
 pub use to_slim_result_string::*;
 pub use utils::from_rust_module_path_to_class_path;
@@ -196,6 +150,63 @@ pub enum ConstructorError {
     NoConstructor,
     ArgumentParsingError(String),
     CouldNotInvoke(String),
+    /// A constructor asks the runtime to stop or ignore its current batch.
+    Control(SlimControlException),
+}
+
+/// A structured request from a fixture to change SliM batch execution.
+///
+/// The reference implementation recognizes exception class names such as
+/// `StopTest`. Rust fixtures express the same request by returning this value
+/// through [`ExecuteMethodError::Control`].
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum SlimControl {
+    AbortSlimTest,
+    AbortSlimSuite,
+    IgnoreScriptTest,
+    IgnoreAllTests,
+}
+
+impl SlimControl {
+    pub fn abort_slim_test(message: impl Into<String>) -> SlimControlException {
+        SlimControlException::new(Self::AbortSlimTest, message)
+    }
+
+    pub fn abort_slim_suite(message: impl Into<String>) -> SlimControlException {
+        SlimControlException::new(Self::AbortSlimSuite, message)
+    }
+
+    pub fn ignore_script_test(message: impl Into<String>) -> SlimControlException {
+        SlimControlException::new(Self::IgnoreScriptTest, message)
+    }
+
+    pub fn ignore_all_tests(message: impl Into<String>) -> SlimControlException {
+        SlimControlException::new(Self::IgnoreAllTests, message)
+    }
+}
+
+/// Details for a fixture-requested SliM batch control result.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct SlimControlException {
+    pub control: SlimControl,
+    pub message: Option<String>,
+}
+
+impl SlimControlException {
+    pub fn new(control: SlimControl, message: impl Into<String>) -> Self {
+        let message = message.into();
+        Self {
+            control,
+            message: (!message.is_empty()).then_some(message),
+        }
+    }
+
+    pub fn without_message(control: SlimControl) -> Self {
+        Self {
+            control,
+            message: None,
+        }
+    }
 }
 
 /// Error that can happen while trying to execute a method in a feature.
@@ -207,6 +218,8 @@ pub enum ExecuteMethodError {
     ArgumentParsingError(String),
     /// And there might be some failure in the method itself, which should cause an ExecutionError.
     ExecutionError(String),
+    /// A fixture asks the SliM runtime to stop or ignore the current work.
+    Control(SlimControlException),
 }
 
 impl ExecuteMethodError {
@@ -231,6 +244,7 @@ impl Display for ExecuteMethodError {
                 write!(f, "NO_CONVERTER_FOR_ARGUMENT_NUMBER {argument}")
             }
             ExecuteMethodError::ExecutionError(error) => f.write_str(error),
+            ExecuteMethodError::Control(control) => write!(f, "{:?}", control.control),
         }
     }
 }

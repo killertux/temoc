@@ -1,10 +1,10 @@
 use crate::port::CyclePort;
 use anyhow::{anyhow, bail, Result};
 use rand::Rng;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
-use std::thread::sleep;
+use std::thread::{sleep, JoinHandle};
 use std::time::{Duration, Instant};
 
 pub fn build_slim_server_connector(
@@ -129,22 +129,30 @@ pub struct StdoutSlimServerConnector {
 
 struct StdoutSlimServer {
     child: Child,
-    pipe_output: bool,
+    stderr_thread: Option<JoinHandle<io::Result<()>>>,
 }
 
 impl SlimServerConnector for StdoutSlimServerConnector {
     fn start_and_connect(&mut self) -> Result<Box<dyn SlimServer>> {
-        let child = spawn_server(
+        let mut child = spawn_server(
             &self.command,
             1,
             Stdio::piped(),
             Stdio::piped(),
             Stdio::piped(),
         )?;
+        let child_stderr = child
+            .stderr
+            .take()
+            .ok_or(anyhow!("Failed to open stderr"))?;
+        let pipe_output = self.pipe_output;
+        let stderr_thread = std::thread::spawn(move || {
+            drain_slim_stderr(child_stderr, pipe_output, io::stdout(), io::stderr())
+        });
 
         Ok(Box::new(StdoutSlimServer {
             child,
-            pipe_output: self.pipe_output,
+            stderr_thread: Some(stderr_thread),
         }))
     }
 }
@@ -169,28 +177,83 @@ impl SlimServer for StdoutSlimServer {
     }
 
     fn close(&mut self) -> Result<()> {
-        self.child.wait()?;
-        if self.pipe_output {
-            let mut child_stderr = self
-                .child
-                .stderr
-                .take()
-                .ok_or(anyhow!("Failed to open stderr"))?;
-            let buff_read = BufReader::new(&mut child_stderr);
-            for line in buff_read.lines() {
-                let line = line?;
-                if let Some(line) = line.strip_prefix("SOUT :") {
-                    println!("{}", line);
-                } else if let Some(line) = line.strip_prefix("SOUT.:") {
-                    println!("{}", line);
-                } else if let Some(line) = line.strip_prefix("SERR :") {
-                    eprintln!("{}", line);
-                } else if let Some(line) = line.strip_prefix("SERR.:") {
-                    eprintln!("{}", line);
-                }
-                eprintln!("{}", line);
-            }
-        }
+        let wait_result = self.child.wait().map(|_| ());
+        let drain_result = self
+            .stderr_thread
+            .take()
+            .ok_or(anyhow!("stderr drain thread is missing"))?
+            .join()
+            .map_err(|_| anyhow!("stderr drain thread panicked"))?;
+        wait_result?;
+        drain_result?;
         Ok(())
+    }
+}
+
+fn drain_slim_stderr<R, O, E>(
+    reader: R,
+    pipe_output: bool,
+    mut stdout: O,
+    mut stderr: E,
+) -> io::Result<()>
+where
+    R: Read,
+    O: Write,
+    E: Write,
+{
+    for line in BufReader::new(reader).lines() {
+        let line = line?;
+        if !pipe_output {
+            continue;
+        }
+        if let Some(line) = line
+            .strip_prefix("SOUT :")
+            .or_else(|| line.strip_prefix("SOUT.:"))
+        {
+            writeln!(stdout, "{line}")?;
+        } else if let Some(line) = line
+            .strip_prefix("SERR :")
+            .or_else(|| line.strip_prefix("SERR.:"))
+        {
+            writeln!(stderr, "{line}")?;
+        } else {
+            writeln!(stdout, "{line}")?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::drain_slim_stderr;
+    use std::io::Cursor;
+
+    #[test]
+    fn tunneled_stderr_is_split_without_duplicate_output() {
+        let input = b"SOUT :one\nSOUT.:two\nSERR :bad\nSERR.:worse\nplain\n";
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        drain_slim_stderr(Cursor::new(input), true, &mut stdout, &mut stderr).unwrap();
+
+        assert_eq!(b"one\ntwo\nplain\n", stdout.as_slice());
+        assert_eq!(b"bad\nworse\n", stderr.as_slice());
+    }
+
+    #[test]
+    fn tunneled_stderr_is_still_drained_when_output_is_hidden() {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        drain_slim_stderr(
+            Cursor::new(b"SOUT :ignored\nSERR :ignored\n"),
+            false,
+            &mut stdout,
+            &mut stderr,
+        )
+        .unwrap();
+
+        assert!(stdout.is_empty());
+        assert!(stderr.is_empty());
     }
 }

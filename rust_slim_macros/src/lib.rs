@@ -202,13 +202,24 @@ fn invocation_arm(
                 })?
         }
     });
+    let invoke = quote! { <#ty>::#ident(self, #(#arguments),*) };
+    let result = if returns_slim_control_result(&method.sig.output) {
+        quote! {
+            match #invoke {
+                Ok(value) => ::rust_slim::IntoSlimValue::into_slim_value(value),
+                Err(control) => Err(::rust_slim::ExecuteMethodError::Control(control)),
+            }
+        }
+    } else {
+        quote! { ::rust_slim::IntoSlimValue::into_slim_value(#invoke) }
+    };
     quote! {
         #name => {
             if args.len() != #arity {
                 return Err(::rust_slim::ExecuteMethodError::MethodNotFound { method: method.to_string(), class: #class_path });
             }
             let mut supplied = args.into_iter();
-            ::rust_slim::IntoSlimValue::into_slim_value(<#ty>::#ident(self, #(#arguments),*))
+            #result
         }
     }
 }
@@ -296,7 +307,9 @@ fn constructor_arm(ty: &Type, method: &ImplItemFn) -> proc_macro2::TokenStream {
         }
     });
     let invoke = quote! { <#ty>::#ident(#(#arguments),*) };
-    let result = if returns_result(&method.sig.output) {
+    let result = if returns_slim_control_result(&method.sig.output) {
+        quote! { #invoke.map_err(::rust_slim::ConstructorError::Control) }
+    } else if returns_result(&method.sig.output) {
         quote! { #invoke.map_err(|error| ::rust_slim::ConstructorError::CouldNotInvoke(error.to_string())) }
     } else {
         quote! { Ok(#invoke) }
@@ -314,6 +327,29 @@ fn returns_result(return_type: &ReturnType) -> bool {
         return false;
     };
     matches!(ty.as_ref(), Type::Path(path) if path.path.segments.last().is_some_and(|segment| segment.ident == "Result"))
+}
+
+fn returns_slim_control_result(return_type: &ReturnType) -> bool {
+    let ReturnType::Type(_, ty) = return_type else {
+        return false;
+    };
+    let Type::Path(path) = ty.as_ref() else {
+        return false;
+    };
+    let Some(segment) = path.path.segments.last() else {
+        return false;
+    };
+    let PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return false;
+    };
+    if segment.ident != "Result" {
+        return false;
+    }
+    matches!(
+        arguments.args.iter().nth(1),
+        Some(GenericArgument::Type(Type::Path(error)))
+            if error.path.segments.last().is_some_and(|segment| segment.ident == "SlimControlException")
+    )
 }
 
 fn constructor_returns_fixture(return_type: &ReturnType, fixture_type: &Type) -> bool {

@@ -2,7 +2,7 @@
 
 use rust_slim::{
     fixture, ClassPath, Constructor, ConstructorError, ExecuteMethodError, FromSlimValue,
-    IntoSlimValue, SlimFixture, SlimValue,
+    IntoSlimValue, SlimControl, SlimControlException, SlimFixture, SlimValue,
 };
 use std::marker::PhantomData;
 
@@ -27,6 +27,7 @@ struct SutFixture {
 struct Sut;
 #[derive(Debug, PartialEq)]
 struct MultiConstructor(i64);
+struct ControlledConstructor;
 
 #[fixture]
 impl<T> GenericFixture<T> {
@@ -99,6 +100,14 @@ impl MultiConstructor {
 }
 
 #[fixture]
+impl ControlledConstructor {
+    #[slim(constructor)]
+    pub fn new() -> Result<Self, SlimControlException> {
+        Err(SlimControl::abort_slim_test("constructor control"))
+    }
+}
+
+#[fixture]
 impl Sut {
     pub fn answer(&self) -> i64 {
         42
@@ -138,6 +147,14 @@ impl MacroFixture {
 
     pub fn fails(&self) -> Result<(), &'static str> {
         Err("fixture failed")
+    }
+
+    pub fn abort(&self) -> SlimControlException {
+        SlimControl::abort_slim_test("macro control")
+    }
+
+    pub fn abort_result(&self) -> Result<(), SlimControlException> {
+        Err(SlimControl::ignore_all_tests("macro result control"))
     }
 }
 
@@ -193,6 +210,28 @@ fn macro_turns_result_errors_into_execution_errors() {
         Err(ExecuteMethodError::ExecutionError("fixture failed".into())),
         fixture.execute_method("fails", Vec::new())
     );
+}
+
+#[test]
+fn macro_preserves_structured_control_results() {
+    let mut fixture = MacroFixture;
+    assert_eq!(
+        Err(ExecuteMethodError::Control(SlimControl::abort_slim_test(
+            "macro control"
+        ))),
+        fixture.execute_method("abort", Vec::new())
+    );
+    assert_eq!(
+        Err(ExecuteMethodError::Control(SlimControl::ignore_all_tests(
+            "macro result control"
+        ))),
+        fixture.execute_method("abort_result", Vec::new())
+    );
+    assert!(matches!(
+        ControlledConstructor::construct(Vec::new()),
+        Err(ConstructorError::Control(control))
+            if control == SlimControl::abort_slim_test("constructor control")
+    ));
 }
 
 #[test]
