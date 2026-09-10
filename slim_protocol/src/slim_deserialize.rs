@@ -1,15 +1,16 @@
-use read_char::read_next_char;
 use std::io::{self, BufRead, Cursor};
+
 use thiserror::Error;
 
-use crate::{ExceptionMessage, Instruction, InstructionResultValue};
-
-use super::{ByeOrSlimInstructions, Id, InstructionResult};
+use crate::{
+    ByeOrSlimInstructions, ExceptionMessage, Id, Instruction, InstructionResult,
+    InstructionResultValue, SlimValue,
+};
 
 #[derive(Debug, Error)]
 pub enum FromSlimReaderError {
     #[error(transparent)]
-    IoError(#[from] std::io::Error),
+    IoError(#[from] io::Error),
     #[error("{0}")]
     Other(String),
 }
@@ -22,9 +23,7 @@ pub trait FromSlimReader {
 
 impl FromSlimReader for String {
     fn from_reader(reader: &mut impl BufRead) -> Result<Self, FromSlimReaderError> {
-        let len = read_len(reader)?;
-        let string = reader.read_n_chars(len)?;
-        Ok(string)
+        read_outer_payload(reader)
     }
 }
 
@@ -45,379 +44,505 @@ where
     T: FromSlimReader,
 {
     fn from_reader(reader: &mut impl BufRead) -> Result<Self, FromSlimReaderError> {
-        let _ = read_len(reader)?; // TODO: Validate this len against the read bytes
-        let mut result = Vec::new();
-        reader.read_expected_char('[')?;
-        let n_elements = read_len(reader)?;
-        for _ in 0..n_elements {
-            result.push(T::from_reader(reader)?);
-            reader.read_expected_char(':')?;
-        }
-        reader.read_expected_char(']')?;
-        Ok(result)
+        let payload = read_outer_payload(reader)?;
+        parse_list_payload(&payload)?
+            .into_iter()
+            .map(|item| T::from_reader(&mut Cursor::new(outer_frame(item))))
+            .collect()
+    }
+}
+
+impl FromSlimReader for SlimValue {
+    fn from_reader(reader: &mut impl BufRead) -> Result<Self, FromSlimReaderError> {
+        parse_slim_value(read_outer_payload(reader)?)
     }
 }
 
 impl FromSlimReader for InstructionResultValue {
     fn from_reader(reader: &mut impl BufRead) -> Result<Self, FromSlimReaderError> {
-        let value = String::from_reader(reader)?;
-        Ok(match value.as_str() {
-            "OK" => InstructionResultValue::Ok,
-            "/__VOID__/" => InstructionResultValue::Void,
-            value if value.starts_with('[') => {
-                let values: Vec<InstructionResultValue> =
-                    Vec::from_reader(&mut Cursor::new(value))?;
-                InstructionResultValue::List(values)
-            }
-            other => {
-                if let Some(message) = other.strip_prefix("__EXCEPTION__:") {
-                    InstructionResultValue::Exception(ExceptionMessage::new(message.into()))
-                } else {
-                    InstructionResultValue::String(other.into())
-                }
-            }
-        })
+        parse_instruction_result_value(read_outer_payload(reader)?)
     }
 }
 
 impl FromSlimReader for InstructionResult {
     fn from_reader(reader: &mut impl BufRead) -> Result<Self, FromSlimReaderError> {
-        let [id, value] = <[String; 2]>::from_reader(reader)?;
-        let id = Id::from(id);
-        Ok(InstructionResult {
-            id,
-            value: match value.as_str() {
-                "OK" => InstructionResultValue::Ok,
-                "/__VOID__/" => InstructionResultValue::Void,
-                value if value.starts_with('[') => {
-                    let value = format!("{:0>6}:{}", value.len(), value);
-                    let values: Vec<InstructionResultValue> =
-                        Vec::from_reader(&mut Cursor::new(value))?;
-                    InstructionResultValue::List(values)
-                }
-                other => {
-                    if let Some(message) = other.strip_prefix("__EXCEPTION__:") {
-                        InstructionResultValue::Exception(ExceptionMessage::new(message.into()))
-                    } else {
-                        InstructionResultValue::String(other.into())
-                    }
-                }
-            },
-        })
+        let values = parse_list_payload(&read_outer_payload(reader)?)?;
+        instruction_result_from_values(values)
     }
 }
 
 impl FromSlimReader for Instruction {
-    fn from_reader(reader: &mut impl BufRead) -> Result<Self, FromSlimReaderError>
-    where
-        Self: Sized,
-    {
-        let mut data: Vec<String> = Vec::from_reader(reader)?;
-        data.reverse();
-
-        let id = Id::from(
-            data.pop()
-                .ok_or(FromSlimReaderError::Other("Expected data".into()))?,
-        );
-        match data
-            .pop()
-            .ok_or(FromSlimReaderError::Other("Expectd instruction".into()))?
-            .as_str()
-        {
-            "import" => {
-                let path = data
-                    .pop()
-                    .ok_or(FromSlimReaderError::Other("Expected path".into()))?;
-                Ok(Instruction::Import { id, path })
-            }
-            "make" => {
-                let instance = data
-                    .pop()
-                    .ok_or(FromSlimReaderError::Other("Expected instance".into()))?;
-                let class = data
-                    .pop()
-                    .ok_or(FromSlimReaderError::Other("Expected class".into()))?;
-                data.reverse();
-                Ok(Instruction::Make {
-                    id,
-                    instance,
-                    class,
-                    args: data,
-                })
-            }
-            "call" => {
-                let instance = data
-                    .pop()
-                    .ok_or(FromSlimReaderError::Other("Expected instance".into()))?;
-                let function = data
-                    .pop()
-                    .ok_or(FromSlimReaderError::Other("Expected function".into()))?;
-                data.reverse();
-                Ok(Instruction::Call {
-                    id,
-                    instance,
-                    function,
-                    args: data,
-                })
-            }
-            "callAndAssign" => {
-                let symbol = data
-                    .pop()
-                    .ok_or(FromSlimReaderError::Other("Expected symbol".into()))?;
-                let instance = data
-                    .pop()
-                    .ok_or(FromSlimReaderError::Other("Expected instance".into()))?;
-                let function = data
-                    .pop()
-                    .ok_or(FromSlimReaderError::Other("Expected function".into()))?;
-                data.reverse();
-                Ok(Instruction::CallAndAssign {
-                    id,
-                    instance,
-                    function,
-                    symbol,
-                    args: data,
-                })
-            }
-            "assign" => {
-                let symbol = data
-                    .pop()
-                    .ok_or(FromSlimReaderError::Other("Expected symbol".into()))?;
-                let value = data
-                    .pop()
-                    .ok_or(FromSlimReaderError::Other("Expected value".into()))?;
-                Ok(Instruction::Assign { id, symbol, value })
-            }
-            other => todo!("Not implemented {other}"),
-        }
+    fn from_reader(reader: &mut impl BufRead) -> Result<Self, FromSlimReaderError> {
+        Ok(instruction_from_values(parse_list_payload(
+            &read_outer_payload(reader)?,
+        )?))
     }
 }
 
 impl FromSlimReader for ByeOrSlimInstructions {
-    fn from_reader(reader: &mut impl BufRead) -> Result<Self, FromSlimReaderError>
-    where
-        Self: Sized,
-    {
-        let _ = read_len(reader)?;
-        match reader.read_char()? {
-            '[' => {
-                let mut result = Vec::new();
-                let n_elements = read_len(reader)?;
-                for _ in 0..n_elements {
-                    result.push(Instruction::from_reader(reader)?);
-                    reader.read_expected_char(':')?;
-                }
-                reader.read_expected_char(']')?;
-                Ok(ByeOrSlimInstructions::Instructions(result))
-            }
-            'b' => {
-                reader.read_expected_char('y')?;
-                reader.read_expected_char('e')?;
-                Ok(ByeOrSlimInstructions::Bye)
-            }
-            other => Err(FromSlimReaderError::Other(format!(
-                "Non expected byte {other}"
-            ))),
+    fn from_reader(reader: &mut impl BufRead) -> Result<Self, FromSlimReaderError> {
+        let payload = read_outer_payload(reader)?;
+        if payload == "bye" {
+            return Ok(Self::Bye);
         }
+
+        let instructions = parse_list_payload(&payload)?
+            .into_iter()
+            .map(|instruction| parse_list_payload(&instruction).map(instruction_from_values))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self::Instructions(instructions))
     }
 }
 
-trait ReadChar {
-    fn read_char(&mut self) -> Result<char, std::io::Error>;
-    fn read_n_chars(&mut self, n: usize) -> Result<String, std::io::Error> {
-        let mut buffer = String::new();
-        buffer.reserve(n);
-        for _ in 0..n {
-            buffer.push(self.read_char()?);
-        }
-        Ok(buffer)
-    }
-    fn read_expected_char(&mut self, expected_char: char) -> Result<(), std::io::Error> {
-        let char = self.read_char()?;
-        if char == expected_char {
-            Ok(())
-        } else {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("Expected {expected_char} but got {char}"),
-            ))
-        }
-    }
+fn instruction_result_from_values(
+    values: Vec<String>,
+) -> Result<InstructionResult, FromSlimReaderError> {
+    let [id, value]: [String; 2] = values.try_into().map_err(|_| {
+        FromSlimReaderError::Other("Expected an instruction result with an id and a value".into())
+    })?;
+    Ok(InstructionResult {
+        id: Id::from(id),
+        value: parse_instruction_result_value(value)?,
+    })
 }
 
-impl<R> ReadChar for R
-where
-    R: BufRead,
-{
-    fn read_char(&mut self) -> Result<char, std::io::Error> {
-        read_next_char(self).map_err(|err| match err {
-            read_char::Error::NotAnUtf8(_) => {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, "Non UTF-8 character")
+fn parse_instruction_result_value(
+    value: String,
+) -> Result<InstructionResultValue, FromSlimReaderError> {
+    Ok(match parse_slim_value(value)? {
+        SlimValue::List(values) => InstructionResultValue::List(
+            values
+                .into_iter()
+                .map(slim_value_to_instruction_result_value)
+                .collect(),
+        ),
+        SlimValue::String(value) if value == "OK" => InstructionResultValue::Ok,
+        SlimValue::String(value) if value == "/__VOID__/" => InstructionResultValue::Void,
+        SlimValue::String(value) => {
+            if let Some(message) = value.strip_prefix("__EXCEPTION__:") {
+                InstructionResultValue::Exception(ExceptionMessage::new(message.into()))
+            } else {
+                InstructionResultValue::String(value)
             }
-            read_char::Error::Io(err) => err,
-            read_char::Error::EOF => std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "Unexpected end of stream",
-            ),
-        })
+        }
+    })
+}
+
+fn slim_value_to_instruction_result_value(value: SlimValue) -> InstructionResultValue {
+    match value {
+        SlimValue::List(values) => InstructionResultValue::List(
+            values
+                .into_iter()
+                .map(slim_value_to_instruction_result_value)
+                .collect(),
+        ),
+        SlimValue::String(value) => InstructionResultValue::String(value),
     }
 }
 
-fn read_len(reader: &mut impl BufRead) -> Result<usize, std::io::Error> {
-    let mut buffer = Vec::new();
-    buffer.reserve_exact(6);
-    reader.read_until(b':', &mut buffer)?;
-    if buffer.len() < 6 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::BrokenPipe,
-            "Failure reading from Slim Server",
+fn parse_slim_value(value: String) -> Result<SlimValue, FromSlimReaderError> {
+    if value.starts_with('[') {
+        if let Ok(values) = parse_list_payload(&value) {
+            return Ok(SlimValue::List(
+                values
+                    .into_iter()
+                    .map(parse_slim_value)
+                    .collect::<Result<_, _>>()?,
+            ));
+        }
+    }
+    Ok(SlimValue::String(value))
+}
+
+fn instruction_from_values(fields: Vec<String>) -> Instruction {
+    let id = Id::from(fields.first().cloned().unwrap_or_default());
+    let malformed = || Instruction::Malformed {
+        id: id.clone(),
+        fields: fields.clone(),
+    };
+    let Some(operation) = fields.get(1).map(String::as_str) else {
+        return malformed();
+    };
+
+    match operation {
+        "import" if fields.len() == 3 => Instruction::Import {
+            id,
+            path: fields[2].clone(),
+        },
+        "make" if fields.len() >= 4 => Instruction::Make {
+            id,
+            instance: fields[2].clone(),
+            class: fields[3].clone(),
+            args: fields[4..].to_vec(),
+        },
+        "call" if fields.len() >= 4 => Instruction::Call {
+            id,
+            instance: fields[2].clone(),
+            function: fields[3].clone(),
+            args: fields[4..].to_vec(),
+        },
+        "callAndAssign" if fields.len() >= 5 => Instruction::CallAndAssign {
+            id,
+            symbol: fields[2].clone(),
+            instance: fields[3].clone(),
+            function: fields[4].clone(),
+            args: fields[5..].to_vec(),
+        },
+        "assign" if fields.len() == 4 => Instruction::Assign {
+            id,
+            symbol: fields[2].clone(),
+            value: fields[3].clone(),
+        },
+        _ => malformed(),
+    }
+}
+
+/// Reads a complete message. The outer length is counted in UTF-8 bytes.
+fn read_outer_payload(reader: &mut impl BufRead) -> Result<String, FromSlimReaderError> {
+    let length = read_length_prefix(reader)?;
+    let mut bytes = vec![0; length];
+    reader.read_exact(&mut bytes)?;
+    String::from_utf8(bytes)
+        .map_err(|_| FromSlimReaderError::Other("Message payload is not valid UTF-8".into()))
+}
+
+fn outer_frame(payload: String) -> Vec<u8> {
+    format!("{:06}:{}", payload.len(), payload).into_bytes()
+}
+
+fn read_length_prefix(reader: &mut impl BufRead) -> Result<usize, FromSlimReaderError> {
+    let mut prefix = Vec::new();
+    reader.read_until(b':', &mut prefix)?;
+    if prefix.last() != Some(&b':') {
+        return Err(FromSlimReaderError::Other(
+            "Missing message length terminator".into(),
         ));
     }
-    String::from_utf8_lossy(&buffer[..buffer.len() - 1])
+    parse_length(&prefix[..prefix.len() - 1])
+}
+
+fn parse_list_payload(payload: &str) -> Result<Vec<String>, FromSlimReaderError> {
+    let mut position = 0;
+    expect_byte(payload, &mut position, b'[')?;
+    let count = parse_length_at(payload, &mut position)?;
+    let mut values = Vec::new();
+    for _ in 0..count {
+        values.push(parse_utf16_string(payload, &mut position)?);
+        expect_byte(payload, &mut position, b':')?;
+    }
+    expect_byte(payload, &mut position, b']')?;
+    if position != payload.len() {
+        return Err(FromSlimReaderError::Other(
+            "Trailing data after SliM list terminator".into(),
+        ));
+    }
+    Ok(values)
+}
+
+fn parse_utf16_string(payload: &str, position: &mut usize) -> Result<String, FromSlimReaderError> {
+    let length = parse_length_at(payload, position)?;
+    if length == 0 {
+        return Ok(String::new());
+    }
+    let start = *position;
+    let mut utf16_units = 0;
+    for (offset, character) in payload[start..].char_indices() {
+        utf16_units += character.len_utf16();
+        if utf16_units == length {
+            let end = start + offset + character.len_utf8();
+            *position = end;
+            return Ok(payload[start..end].into());
+        }
+        if utf16_units > length {
+            return Err(FromSlimReaderError::Other(
+                "SliM string length ends in the middle of a UTF-16 character".into(),
+            ));
+        }
+    }
+    Err(FromSlimReaderError::Other(
+        "SliM string is shorter than its declared UTF-16 length".into(),
+    ))
+}
+
+fn parse_length_at(payload: &str, position: &mut usize) -> Result<usize, FromSlimReaderError> {
+    let rest = &payload[*position..];
+    let Some(end) = rest.find(':') else {
+        return Err(FromSlimReaderError::Other(
+            "Missing SliM length terminator".into(),
+        ));
+    };
+    let prefix = &rest[..end];
+    *position += end + 1;
+    parse_length(prefix.as_bytes())
+}
+
+fn parse_length(prefix: &[u8]) -> Result<usize, FromSlimReaderError> {
+    if prefix.len() < 6 || !prefix.iter().all(u8::is_ascii_digit) {
+        return Err(FromSlimReaderError::Other(
+            "SliM lengths must contain at least six ASCII digits".into(),
+        ));
+    }
+    std::str::from_utf8(prefix)
+        .expect("ASCII digits are valid UTF-8")
         .parse()
-        .map_err(|_| {
-            std::io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Failure converting read data to a number",
-            )
-        })
+        .map_err(|_| FromSlimReaderError::Other("SliM length is out of range".into()))
+}
+
+fn expect_byte(
+    payload: &str,
+    position: &mut usize,
+    expected: u8,
+) -> Result<(), FromSlimReaderError> {
+    match payload.as_bytes().get(*position) {
+        Some(actual) if *actual == expected => {
+            *position += 1;
+            Ok(())
+        }
+        Some(actual) => Err(FromSlimReaderError::Other(format!(
+            "Expected {} but got {}",
+            expected as char, *actual as char
+        ))),
+        None => Err(FromSlimReaderError::Other(format!(
+            "Expected {} but reached the end of the SliM list",
+            expected as char
+        ))),
+    }
 }
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use std::error::Error;
-    use std::io::Cursor;
+    use std::io::{Cursor, Read};
+
+    use super::*;
+    use crate::ToSlimString;
 
     #[test]
-    fn read_empty_string() -> Result<(), Box<dyn Error>> {
+    fn reads_unicode_using_utf16_lengths() -> Result<(), Box<dyn Error>> {
         assert_eq!(
-            String::new(),
-            String::from_reader(&mut Cursor::new("000000:"))?
+            vec!["é".to_string(), "😀".into()],
+            Vec::<String>::from_reader(&mut Cursor::new("000031:[000002:000001:é:000002:😀:]"))?
         );
         Ok(())
     }
 
     #[test]
-    fn read_string() -> Result<(), Box<dyn Error>> {
+    fn reads_empty_strings_and_rejects_partial_surrogate_lengths() -> Result<(), Box<dyn Error>> {
         assert_eq!(
-            String::from("Hello world"),
-            String::from_reader(&mut Cursor::new("000011:Hello world"))?
+            vec![String::new()],
+            Vec::<String>::from_reader(&mut Cursor::new("000017:[000001:000000::]"))?
         );
+        let error = Vec::<String>::from_reader(&mut Cursor::new("000021:[000001:000001:😀:]"))
+            .expect_err("an astral character needs two UTF-16 code units");
+        assert!(error.to_string().contains("middle of a UTF-16 character"));
         Ok(())
     }
 
     #[test]
-    fn read_string_with_special_chars() -> Result<(), Box<dyn Error>> {
-        assert_eq!(
-            String::from("Tipo de evento inválido"),
-            String::from_reader(&mut Cursor::new("000023:Tipo de evento inválido"))?
-        );
-        Ok(())
-    }
+    fn rejects_wrong_list_size_and_terminators() {
+        Vec::<String>::from_reader(&mut Cursor::new("000018:[000002:000001:a:]"))
+            .expect_err("list count must match");
 
-    #[test]
-    fn read_empty_vec() -> Result<(), Box<dyn Error>> {
-        assert_eq!(
-            Vec::<String>::new(),
-            Vec::<String>::from_reader(&mut Cursor::new("000009:[000000:]"))?
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn read_vec() -> Result<(), Box<dyn Error>> {
-        assert_eq!(
-            vec!["Element1".to_string(), "Element2".into()],
-            Vec::<String>::from_reader(&mut Cursor::new(
-                "000041:[000002:000008:Element1:000008:Element2:]"
-            ))?
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn read_with_incorrect_values() -> Result<(), Box<dyn Error>> {
-        let err = Vec::<String>::from_reader(&mut Cursor::new("000009:[000000:A]"))
-            .expect_err("Expected error")
+        let err = Vec::<String>::from_reader(&mut Cursor::new("000018:[000001:000001:a;]"))
+            .expect_err("item terminator must be a colon")
             .to_string();
-        assert_eq!("Expected ] but got A", err);
+        assert_eq!("Expected : but got ;", err);
+    }
+
+    #[test]
+    fn recursive_result_lists_round_trip() -> Result<(), Box<dyn Error>> {
+        let result = InstructionResult {
+            id: Id::from("id"),
+            value: InstructionResultValue::List(vec![
+                InstructionResultValue::String("é".into()),
+                InstructionResultValue::List(vec![InstructionResultValue::String("😀".into())]),
+            ]),
+        };
+        let wire = result.to_slim_string();
+        assert_eq!(
+            result,
+            InstructionResult::from_reader(&mut Cursor::new(wire.as_bytes()))?
+        );
         Ok(())
     }
 
     #[test]
-    fn read_instruction_result() -> Result<(), Box<dyn Error>> {
-        let id = Id::from("01HFM0NQM3ZS6BBX0ZH6VA6DJX");
+    fn recursive_wire_values_round_trip() -> Result<(), Box<dyn Error>> {
+        let value = SlimValue::List(vec![
+            SlimValue::String("é".into()),
+            SlimValue::List(vec![SlimValue::String("😀".into())]),
+        ]);
+        let wire = value.to_slim_string();
         assert_eq!(
-            InstructionResult {
-                id: id.clone(),
-                value: InstructionResultValue::Ok
-            },
-            InstructionResult::from_reader(&mut Cursor::new(
-                "000053:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000002:OK:]"
-            ))?
+            value,
+            SlimValue::from_reader(&mut Cursor::new(wire.as_bytes()))?
         );
+        Ok(())
+    }
+
+    #[test]
+    fn fragmented_reads_work() -> Result<(), Box<dyn Error>> {
+        struct OneByteReader(Cursor<Vec<u8>>);
+        impl Read for OneByteReader {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                let mut byte = [0];
+                let read = self.0.read(&mut byte)?;
+                if read == 0 {
+                    return Ok(0);
+                }
+                buffer[0] = byte[0];
+                Ok(1)
+            }
+        }
+        let input = vec!["😀".to_string()].to_slim_string().as_bytes().to_vec();
+        let mut reader = io::BufReader::new(OneByteReader(Cursor::new(input)));
         assert_eq!(
-            InstructionResult {
-                id: id.clone(),
-                value: InstructionResultValue::Void
-            },
-            InstructionResult::from_reader(&mut Cursor::new(
-                "000061:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000010:/__VOID__/:]"
-            ))?
+            vec!["😀".to_string()],
+            Vec::<String>::from_reader(&mut reader)?
         );
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_instruction_retains_its_id_and_raw_fields() -> Result<(), Box<dyn Error>> {
+        let message = vec![
+            vec!["unknown_id", "unknown", "field"],
+            vec!["short_id", "call", "fixture"],
+        ]
+        .to_slim_string();
         assert_eq!(
-            InstructionResult {
-                id: id.clone(),
-                value: InstructionResultValue::String("null".to_string()),
-            },
-            InstructionResult::from_reader(&mut Cursor::new(
-                "000055:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000004:null:]"
-            ))?
+            ByeOrSlimInstructions::Instructions(vec![
+                Instruction::Malformed {
+                    id: Id::from("unknown_id"),
+                    fields: vec!["unknown_id".into(), "unknown".into(), "field".into()],
+                },
+                Instruction::Malformed {
+                    id: Id::from("short_id"),
+                    fields: vec!["short_id".into(), "call".into(), "fixture".into()],
+                },
+            ]),
+            ByeOrSlimInstructions::from_reader(&mut Cursor::new(message.as_bytes()))?
         );
+        Ok(())
+    }
+
+    #[test]
+    fn all_instruction_forms_round_trip() -> Result<(), Box<dyn Error>> {
+        let instructions = vec![
+            Instruction::Import {
+                id: Id::from("import"),
+                path: "Fixtures".into(),
+            },
+            Instruction::Make {
+                id: Id::from("make"),
+                instance: "fixture".into(),
+                class: "Calculator".into(),
+                args: vec!["1".into()],
+            },
+            Instruction::Call {
+                id: Id::from("call"),
+                instance: "fixture".into(),
+                function: "value".into(),
+                args: vec!["é".into()],
+            },
+            Instruction::CallAndAssign {
+                id: Id::from("call-and-assign"),
+                symbol: "answer".into(),
+                instance: "fixture".into(),
+                function: "answer".into(),
+                args: vec!["😀".into()],
+            },
+            Instruction::Assign {
+                id: Id::from("assign"),
+                symbol: "value".into(),
+                value: "42".into(),
+            },
+        ];
+        let wire = instructions.to_slim_string();
         assert_eq!(
-            InstructionResult {
-                id: id.clone(),
-                value: InstructionResultValue::String("Value".to_string()),
-            },
-            InstructionResult::from_reader(&mut Cursor::new(
-                "000056:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000005:Value:]"
-            ))?
+            ByeOrSlimInstructions::Instructions(instructions),
+            ByeOrSlimInstructions::from_reader(&mut Cursor::new(wire.as_bytes()))?
         );
+        Ok(())
+    }
+
+    #[test]
+    fn structurally_invalid_instruction_list_is_a_wire_error() {
+        let malformed = ["[000002:000002:id;]"].to_slim_string();
+        ByeOrSlimInstructions::from_reader(&mut Cursor::new(malformed.as_bytes()))
+            .expect_err("invalid nested list syntax must fail at the wire layer");
+    }
+
+    #[test]
+    fn a_string_starting_with_a_bracket_is_not_always_a_list() -> Result<(), Box<dyn Error>> {
+        let value = SlimValue::String("[literal text".into());
+        let wire = value.to_slim_string();
         assert_eq!(
-            InstructionResult {
-                id: id.clone(),
-                value: InstructionResultValue::List(vec![InstructionResultValue::String("Value 1".to_string()), InstructionResultValue::String("Value 2".to_string())]),
-            },
-            InstructionResult::from_reader(&mut Cursor::new(
-                "000056:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:000039:[000002:000007:Value 1:000007:Value 2:]:]"
-            ))?
+            value,
+            SlimValue::from_reader(&mut Cursor::new(wire.as_bytes()))?
         );
-        assert_eq!(
-            InstructionResult {
-                id: id.clone(),
-                value: InstructionResultValue::Exception(ExceptionMessage::new("Message".into())),
-            },
-            InstructionResult::from_reader(&mut Cursor::new(
-                "000073:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:0000021:__EXCEPTION__:Message:]"
-            ))?
-        );
-        let exception = InstructionResult::from_reader(&mut Cursor::new(
-            "000100:[000002:000026:01HFM0NQM3ZS6BBX0ZH6VA6DJX:0000048:__EXCEPTION__:Some Exception message:<<Message>>:]"
-        ))?;
-        assert_eq!(
-            InstructionResult {
-                id: id.clone(),
-                value: InstructionResultValue::Exception(ExceptionMessage::new(
-                    "Some Exception message:<<Message>>".into()
-                ))
-            },
-            exception
-        );
-        let InstructionResultValue::Exception(message) = exception.value else {
-            return Err("Expected exception".into());
+        Ok(())
+    }
+
+    #[test]
+    fn recursive_response_lists_keep_control_markers_as_strings() -> Result<(), Box<dyn Error>> {
+        let response = InstructionResult {
+            id: Id::from("id"),
+            value: InstructionResultValue::List(vec![
+                InstructionResultValue::String("OK".into()),
+                InstructionResultValue::String("/__VOID__/".into()),
+                InstructionResultValue::String("__EXCEPTION__:text".into()),
+                InstructionResultValue::List(vec![InstructionResultValue::String("OK".into())]),
+            ]),
         };
-        assert_eq!("Message", message.pretty_message()?);
+        let wire = response.to_slim_string();
+        assert_eq!(
+            response,
+            InstructionResult::from_reader(&mut Cursor::new(wire.as_bytes()))?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn top_level_response_markers_keep_their_protocol_meaning() -> Result<(), Box<dyn Error>> {
+        let results = vec![
+            InstructionResult::ok(Id::from("ok")),
+            InstructionResult::void(Id::from("void")),
+            InstructionResult::exception(
+                Id::from("exception"),
+                ExceptionMessage::new("message:<<failure>>".into()),
+            ),
+        ];
+        let wire = results.to_slim_string();
+        assert_eq!(
+            results,
+            Vec::<InstructionResult>::from_reader(&mut Cursor::new(wire.as_bytes()))?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_invalid_outer_frames_and_trailing_list_data() {
+        for wire in [
+            b"0000:x".as_slice(),
+            b"00000x:x".as_slice(),
+            b"000006".as_slice(),
+            b"000001:\xff".as_slice(),
+        ] {
+            String::from_reader(&mut Cursor::new(wire)).expect_err("invalid frame must fail");
+        }
+
+        Vec::<String>::from_reader(&mut Cursor::new("000010:[000000:]x"))
+            .expect_err("trailing data after a list must fail");
+    }
+
+    #[test]
+    fn accepts_seven_digit_outer_lengths() -> Result<(), Box<dyn Error>> {
+        let value = "x".repeat(1_000_000);
+        assert_eq!(
+            value,
+            String::from_reader(&mut Cursor::new(value.to_slim_string().as_bytes()))?
+        );
         Ok(())
     }
 }

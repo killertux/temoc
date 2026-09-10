@@ -150,8 +150,24 @@ impl Display for Id {
     }
 }
 
+/// The recursive value model used by the SliM wire protocol.
+///
+/// Runtime-only values such as fixture objects are deliberately not represented
+/// here; they belong to the execution layer.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum SlimValue {
+    String(String),
+    List(Vec<SlimValue>),
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Instruction {
+    /// An instruction list with an unknown operation or an invalid number of
+    /// fields. The server must reply to this item and keep processing its batch.
+    Malformed {
+        id: Id,
+        fields: Vec<String>,
+    },
     Import {
         id: Id,
         path: String,
@@ -160,12 +176,16 @@ pub enum Instruction {
         id: Id,
         instance: String,
         class: String,
+        /// Instruction arguments remain string-only until the typed runtime
+        /// value model is introduced.
         args: Vec<String>,
     },
     Call {
         id: Id,
         instance: String,
         function: String,
+        /// Instruction arguments remain string-only until the typed runtime
+        /// value model is introduced.
         args: Vec<String>,
     },
     #[allow(dead_code)]
@@ -174,6 +194,8 @@ pub enum Instruction {
         symbol: String,
         instance: String,
         function: String,
+        /// Instruction arguments remain string-only until the typed runtime
+        /// value model is introduced.
         args: Vec<String>,
     },
     #[allow(dead_code)]
