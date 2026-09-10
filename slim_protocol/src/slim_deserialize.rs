@@ -187,24 +187,30 @@ fn instruction_from_values(fields: Vec<String>) -> Result<Instruction, FromSlimR
                 .map(parse_slim_value)
                 .collect::<Result<_, _>>()?,
         }),
-        "callAndAssign" if fields.len() >= 5 => Ok(Instruction::CallAndAssign {
-            id,
-            symbol: fields[2].clone(),
-            instance: fields[3].clone(),
-            function: fields[4].clone(),
-            args: fields[5..]
-                .iter()
-                .cloned()
-                .map(parse_slim_value)
-                .collect::<Result<_, _>>()?,
-        }),
-        "assign" if fields.len() == 4 => Ok(Instruction::Assign {
+        "callAndAssign" if fields.len() >= 5 && is_symbol_name(&fields[2]) => {
+            Ok(Instruction::CallAndAssign {
+                id,
+                symbol: fields[2].clone(),
+                instance: fields[3].clone(),
+                function: fields[4].clone(),
+                args: fields[5..]
+                    .iter()
+                    .cloned()
+                    .map(parse_slim_value)
+                    .collect::<Result<_, _>>()?,
+            })
+        }
+        "assign" if fields.len() == 4 && is_symbol_name(&fields[2]) => Ok(Instruction::Assign {
             id,
             symbol: fields[2].clone(),
             value: parse_slim_value(fields[3].clone())?,
         }),
         _ => Ok(malformed()),
     }
+}
+
+fn is_symbol_name(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_alphabetic())
 }
 
 /// Reads a complete message. The outer length is counted in UTF-8 bytes.
@@ -433,6 +439,24 @@ mod test {
             ]),
             ByeOrSlimInstructions::from_reader(&mut Cursor::new(message.as_bytes()))?
         );
+        Ok(())
+    }
+
+    #[test]
+    fn symbol_assignment_instruction_names_are_letters_only() -> Result<(), Box<dyn Error>> {
+        for fields in [
+            vec!["bad", "assign", "has_underscore", "value"],
+            vec!["bad", "callAndAssign", "has1digit", "fixture", "method"],
+        ] {
+            let wire = fields.to_slim_string();
+            assert_eq!(
+                Instruction::Malformed {
+                    id: Id::from("bad"),
+                    fields: fields.into_iter().map(str::to_owned).collect(),
+                },
+                Instruction::from_reader(&mut Cursor::new(wire.as_bytes()))?
+            );
+        }
         Ok(())
     }
 

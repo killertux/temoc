@@ -1,0 +1,5 @@
+error: a `#[slim(constructor)]` method must be an associated function
+ --> tests/ui/fixture_constructor_receiver.rs:8:9
+  |
+8 |     pub fn new(&self) -> Self {
+  |         ^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,5 @@
+error: a `#[slim(sut)]` method must have an &mut self receiver
+ --> tests/ui/fixture_sut_signature.rs:8:9
+  |
+8 |     pub fn system_under_test() -> Fixture {
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

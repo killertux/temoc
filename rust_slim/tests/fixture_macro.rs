@@ -1,7 +1,8 @@
 #![cfg(feature = "macros")]
 
 use rust_slim::{
-    fixture, ClassPath, ExecuteMethodError, FromSlimValue, IntoSlimValue, SlimFixture, SlimValue,
+    fixture, ClassPath, Constructor, ConstructorError, ExecuteMethodError, FromSlimValue,
+    IntoSlimValue, SlimFixture, SlimValue,
 };
 use std::marker::PhantomData;
 
@@ -10,12 +11,44 @@ struct MacroFixture;
 
 struct Word(String);
 
+#[derive(Default)]
 struct GenericFixture<T>(PhantomData<T>);
+#[derive(Default)]
+struct GenericDefaultFixture<T>(PhantomData<T>);
+#[derive(Default)]
+struct BoundedDefaultFixture<T>(T);
+
+#[derive(Debug, PartialEq)]
+struct Constructed(i64);
+struct SutFixture {
+    sut: Sut,
+}
+#[derive(Default)]
+struct Sut;
+#[derive(Debug, PartialEq)]
+struct MultiConstructor(i64);
 
 #[fixture]
 impl<T> GenericFixture<T> {
     pub fn value(&self) -> &'static str {
         "generic"
+    }
+}
+
+#[fixture]
+impl<T> GenericDefaultFixture<T> {
+    pub fn value(&self) -> &'static str {
+        "default"
+    }
+}
+
+#[fixture]
+impl<T> BoundedDefaultFixture<T>
+where
+    T: Default,
+{
+    pub fn value(&self) -> &'static str {
+        "bounded default"
     }
 }
 
@@ -36,10 +69,63 @@ impl IntoSlimValue for Word {
     }
 }
 
+#[fixture("Test.Constructed")]
+impl Constructed {
+    #[slim(constructor)]
+    pub fn new(number: i64) -> Result<Self, &'static str> {
+        if number >= 0 {
+            Ok(Self(number))
+        } else {
+            Err("negative")
+        }
+    }
+
+    pub fn value(&self) -> i64 {
+        self.0
+    }
+}
+
+#[fixture]
+impl MultiConstructor {
+    #[slim(constructor)]
+    pub fn empty() -> Self {
+        Self(0)
+    }
+
+    #[slim(constructor)]
+    pub fn with_value(value: i64) -> Self {
+        Self(value)
+    }
+}
+
+#[fixture]
+impl Sut {
+    pub fn answer(&self) -> i64 {
+        42
+    }
+}
+
+#[fixture]
+impl SutFixture {
+    #[slim(constructor)]
+    pub fn new() -> Self {
+        Self { sut: Sut }
+    }
+
+    #[slim(sut)]
+    pub fn system_under_test(&mut self) -> &mut Sut {
+        &mut self.sut
+    }
+}
+
 #[fixture("Test.MacroFixture")]
 impl MacroFixture {
     pub fn helper() -> &'static str {
         "associated functions are not fixture methods"
+    }
+
+    pub fn generic_helper<T>(value: T) -> T {
+        value
     }
 
     pub fn nested(&self, values: Vec<Vec<i64>>) -> Vec<Vec<i64>> {
@@ -97,6 +183,7 @@ fn macro_checks_arity_before_accessing_arguments() {
         "associated functions are not fixture methods",
         MacroFixture::helper()
     );
+    assert_eq!(42, MacroFixture::generic_helper(42));
 }
 
 #[test]
@@ -116,4 +203,55 @@ fn macro_supports_generic_fixture_types() {
         fixture.execute_method("value", Vec::new())
     );
     assert!(GenericFixture::<i64>::class_path().ends_with("GenericFixture"));
+}
+
+#[test]
+fn macro_generates_typed_fallible_constructors() {
+    assert_eq!(
+        Ok(7),
+        Constructed::construct(vec![SlimValue::String("7".into())]).map(|value| value.0)
+    );
+    assert_eq!(
+        Err(ConstructorError::NoConstructor),
+        Constructed::construct(Vec::new())
+    );
+    assert_eq!(
+        Err(ConstructorError::CouldNotInvoke("negative".into())),
+        Constructed::construct(vec![SlimValue::String("-1".into())])
+    );
+    assert_eq!(
+        Err(ConstructorError::ArgumentParsingError("i64".into())),
+        Constructed::construct(vec![SlimValue::String("not a number".into())])
+    );
+}
+
+#[test]
+fn macro_forwards_missing_methods_to_the_annotated_sut() {
+    let mut fixture = SutFixture::construct(Vec::new()).unwrap();
+    assert_eq!(
+        Ok(SlimValue::String("42".into())),
+        fixture.execute_system_under_test("answer", Vec::new())
+    );
+}
+
+#[test]
+fn macro_selects_marked_constructors_by_arity_and_keeps_default_construction() {
+    assert_eq!(
+        MultiConstructor(0),
+        MultiConstructor::construct(Vec::new()).unwrap()
+    );
+    assert_eq!(
+        MultiConstructor(9),
+        MultiConstructor::construct(vec![SlimValue::String("9".into())]).unwrap()
+    );
+    assert_eq!(
+        Err(ConstructorError::NoConstructor),
+        MultiConstructor::construct(vec![
+            SlimValue::String("1".into()),
+            SlimValue::String("2".into())
+        ])
+    );
+    assert!(MacroFixture::construct(Vec::new()).is_ok());
+    assert!(GenericDefaultFixture::<std::rc::Rc<()>>::construct(Vec::new()).is_ok());
+    assert!(BoundedDefaultFixture::<i64>::construct(Vec::new()).is_ok());
 }

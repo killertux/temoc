@@ -1,0 +1,5 @@
+error: a `#[slim(constructor)]` method must return `Self` or `Result<Self, E>`
+ --> tests/ui/fixture_constructor_return.rs:8:18
+  |
+8 |     pub fn new() -> i64 {
+  |                  ^^^^^^
