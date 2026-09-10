@@ -1,7 +1,10 @@
-use crate::{ClassPath, Constructor, SlimFixture, SlimValue};
+use crate::{
+    ClassPath, Constructor, ConstructorError, ExecuteMethodError, SlimFixture, SlimObject,
+    SlimValue,
+};
 use convert_case::{Case, Casing};
 use slim_protocol::{
-    ByeOrSlimInstructions, ExceptionMessage, FromSlimReader, FromSlimReaderError, Instruction,
+    ByeOrSlimInstructions, ExceptionMessage, FromSlimReader, FromSlimReaderError, Id, Instruction,
     InstructionResult, InstructionResultValue, SlimValue as WireSlimValue, ToSlimString,
 };
 use std::{
@@ -10,7 +13,9 @@ use std::{
 };
 use thiserror::Error;
 
-/// Error that can happen while executing an SlimServer
+pub type SlimClosureConstructor =
+    Box<dyn Fn(Vec<SlimValue>) -> Result<SlimObject, ConstructorError>>;
+
 #[derive(Debug, Error)]
 pub enum SlimServerError {
     #[error(transparent)]
@@ -19,13 +24,13 @@ pub enum SlimServerError {
     FromSlimReaderError(#[from] FromSlimReaderError),
 }
 
-pub type SlimClosureConstructor = Box<dyn Fn(Vec<SlimValue>) -> Box<dyn SlimFixture>>;
-
-/// The SlimServer responsible to get the Slim commands and execute against the Fixtures.
+/// The mutable execution context required by the SliM instruction set.
 pub struct SlimServer<R: Read, W: Write> {
     fixtures: HashMap<String, SlimClosureConstructor>,
-    instances: HashMap<String, Box<dyn SlimFixture>>,
-    libraries: HashMap<String, Box<dyn SlimFixture>>,
+    instances: HashMap<String, SlimObject>,
+    /// Kept as a vector because library lookup is a stack, not a map.
+    libraries: Vec<(String, SlimObject)>,
+    actors: Vec<SlimObject>,
     symbols: HashMap<String, SlimValue>,
     imports: Vec<String>,
     reader: BufReader<R>,
@@ -33,37 +38,38 @@ pub struct SlimServer<R: Read, W: Write> {
 }
 
 impl<R: Read, W: Write> SlimServer<R, W> {
-    /// Create a new SlimServer
     pub fn new(reader: R, writer: W) -> Self {
         Self {
             fixtures: HashMap::new(),
             instances: HashMap::new(),
-            libraries: HashMap::new(),
+            libraries: Vec::new(),
+            actors: Vec::new(),
             symbols: HashMap::new(),
-            reader: BufReader::new(reader),
             imports: Vec::new(),
+            reader: BufReader::new(reader),
             writer,
         }
     }
 
-    /// Add a new fixture
     pub fn add_fixture<T: ClassPath + Constructor + SlimFixture + 'static>(&mut self) {
         self.fixtures.insert(
             T::class_path(),
-            Box::new(|args: Vec<SlimValue>| Box::new(T::construct(args)) as Box<dyn SlimFixture>)
-                as Box<dyn Fn(Vec<SlimValue>) -> Box<dyn SlimFixture>>,
+            Box::new(|args| {
+                T::construct(args).map(|fixture| SlimObject::fixture(fixture, T::class_path()))
+            }),
         );
     }
 
-    /// Run the server
     pub fn run(mut self) -> Result<(), SlimServerError> {
         self.writer.write_all(b"Slim -- V0.5\n")?;
+        self.writer.flush()?;
         loop {
             match ByeOrSlimInstructions::from_reader(&mut self.reader)? {
                 ByeOrSlimInstructions::Bye => break,
                 ByeOrSlimInstructions::Instructions(instructions) => {
                     let result = self.execute_instructions(instructions);
                     self.writer.write_all(result.to_slim_string().as_bytes())?;
+                    self.writer.flush()?;
                 }
             }
         }
@@ -71,140 +77,250 @@ impl<R: Read, W: Write> SlimServer<R, W> {
     }
 
     fn execute_instructions(&mut self, instructions: Vec<Instruction>) -> Vec<InstructionResult> {
-        let mut results = Vec::new();
-        for instruction in instructions {
-            match instruction {
-                Instruction::Malformed { id, fields } => {
-                    results.push(InstructionResult::exception(
-                        id,
-                        ExceptionMessage::new(format!(
-                            "MALFORMED_INSTRUCTION [{}]",
-                            fields.join(",")
-                        )),
-                    ));
-                }
-                Instruction::Import { id, path } => {
-                    self.imports.push(path);
-                    results.push(InstructionResult::ok(id))
-                }
-                Instruction::Make {
-                    id,
-                    instance,
-                    class,
-                    args,
-                } => {
-                    let class = self.parse_symbol(class);
-                    let Some(fixture) = self.find_fixture(&class) else {
-                        results.push(InstructionResult::exception(
-                            id,
-                            ExceptionMessage::new(format!("NO CLASS: {class}")),
-                        ));
-                        continue;
-                    };
-                    let args = self.parse_wire_values(args);
-                    if instance.starts_with("library") {
-                        self.libraries.insert(instance, fixture(args));
-                    } else {
-                        self.instances.insert(instance, fixture(args));
-                    }
-                    results.push(InstructionResult::ok(id))
-                }
-                Instruction::Call {
-                    id,
-                    instance,
-                    function,
-                    args,
-                } => {
-                    let args = self.parse_wire_values(args);
-                    let instances = if instance.starts_with("library") {
-                        &mut self.libraries
-                    } else {
-                        &mut self.instances
-                    };
-                    let Some(instance) = instances.get_mut(&instance) else {
-                        results.push(InstructionResult::exception(
-                            id,
-                            ExceptionMessage::new(format!("NO_INSTANCE: {instance}")),
-                        ));
-                        continue;
-                    };
-                    let function = function.to_case(Case::Snake);
+        instructions
+            .into_iter()
+            .map(|instruction| self.execute_instruction(instruction))
+            .collect()
+    }
 
-                    match instance.execute_method(&function, args) {
-                        Ok(value) => results.push(instruction_result_for_value(id, value)),
-                        Err(error) => results.push(InstructionResult::exception(
-                            id,
-                            ExceptionMessage::new(error.to_string()),
-                        )),
-                    }
+    fn execute_instruction(&mut self, instruction: Instruction) -> InstructionResult {
+        match instruction {
+            Instruction::Malformed { id, fields } => {
+                exception(id, format!("MALFORMED_INSTRUCTION [{}]", fields.join(",")))
+            }
+            Instruction::Import { id, path } => {
+                self.imports.push(path);
+                InstructionResult::ok(id)
+            }
+            Instruction::Make {
+                id,
+                instance,
+                class,
+                args,
+            } => self.make(id, instance, class, args),
+            Instruction::Call {
+                id,
+                instance,
+                function,
+                args,
+            } => self.call(id, None, instance, function, args),
+            Instruction::CallAndAssign {
+                id,
+                symbol,
+                instance,
+                function,
+                args,
+            } => {
+                if !is_symbol_name(&symbol) {
+                    let mut fields = vec![
+                        id.to_string(),
+                        "callAndAssign".into(),
+                        symbol,
+                        instance,
+                        function,
+                    ];
+                    fields.extend(args.iter().map(wire_value_text));
+                    return malformed_instruction(id, fields);
                 }
-                Instruction::CallAndAssign {
-                    id,
-                    symbol,
-                    instance,
-                    function,
-                    args,
-                } => {
-                    let args = self.parse_wire_values(args);
-                    let instances = if instance.starts_with("library") {
-                        &mut self.libraries
-                    } else {
-                        &mut self.instances
-                    };
-                    let Some(instance) = instances.get_mut(&instance) else {
-                        results.push(InstructionResult::exception(
-                            id,
-                            ExceptionMessage::new(format!("NO_INSTANCE: {instance}")),
-                        ));
-                        continue;
-                    };
-                    let function = function.to_case(Case::Snake);
-                    let symbol = symbol.strip_prefix('$').unwrap_or(&symbol).into();
-                    match instance.execute_method(&function, args) {
-                        Ok(value) => {
-                            results.push(instruction_result_for_value(id, value.clone()));
-                            self.symbols.insert(symbol, value);
-                        }
-                        Err(error) => results.push(InstructionResult::exception(
-                            id,
-                            ExceptionMessage::new(error.to_string()),
-                        )),
-                    }
+                self.call(id, Some(symbol), instance, function, args)
+            }
+            Instruction::Assign { id, symbol, value } => {
+                if !is_symbol_name(&symbol) {
+                    let fields = vec![
+                        id.to_string(),
+                        "assign".into(),
+                        symbol,
+                        wire_value_text(&value),
+                    ];
+                    return malformed_instruction(id, fields);
                 }
-                Instruction::Assign { id, symbol, value } => {
-                    let symbol = symbol.strip_prefix('$').unwrap_or(&symbol).into();
-                    let value = self.parse_wire_value(value);
-                    self.symbols.insert(symbol, value);
-                    results.push(InstructionResult::ok(id))
+                self.symbols
+                    .insert(symbol, runtime_value_without_symbols(value));
+                InstructionResult::ok(id)
+            }
+        }
+    }
+
+    fn make(
+        &mut self,
+        id: Id,
+        instance: String,
+        class: String,
+        args: Vec<WireSlimValue>,
+    ) -> InstructionResult {
+        if let Some(SlimValue::Object(object)) = self.whole_symbol(&class) {
+            self.insert_instance(instance, object);
+            return InstructionResult::ok(id);
+        }
+        let class = self.replace_symbols(&class);
+        let Some(constructor) = self.find_fixture(&class) else {
+            return exception(id, format!("NO_CLASS {class}"));
+        };
+        let args = self.parse_wire_values(args);
+        match constructor(args) {
+            Ok(fixture) => {
+                self.insert_instance(instance, fixture);
+                InstructionResult::ok(id)
+            }
+            Err(ConstructorError::NoConstructor) => {
+                exception(id, format!("NO_CONSTRUCTOR {class}"))
+            }
+            Err(ConstructorError::ArgumentParsingError(argument)) => {
+                exception(id, format!("NO_CONVERTER_FOR_ARGUMENT_NUMBER {argument}"))
+            }
+            Err(ConstructorError::CouldNotInvoke(message)) => exception(
+                id,
+                format!("COULD_NOT_INVOKE_CONSTRUCTOR {class} message:<<{message}>>"),
+            ),
+        }
+    }
+
+    fn insert_instance(&mut self, name: String, object: SlimObject) {
+        self.instances.insert(name.clone(), object.clone());
+        if name.starts_with("library") {
+            self.libraries.push((name, object));
+        }
+    }
+
+    fn call(
+        &mut self,
+        id: Id,
+        assigned_symbol: Option<String>,
+        instance: String,
+        function: String,
+        args: Vec<WireSlimValue>,
+    ) -> InstructionResult {
+        let protocol_function = function;
+        let function = protocol_function.to_case(Case::Snake);
+        let args = self.parse_wire_values(args);
+        let result = self.dispatch(&instance, &function, args);
+        match result {
+            Ok(value) => {
+                if let Some(symbol) = assigned_symbol {
+                    self.symbols.insert(symbol, value.clone());
+                }
+                instruction_result_for_value(id, value)
+            }
+            Err(ExecuteMethodError::MethodNotFound { class, .. }) => exception(
+                id,
+                ExecuteMethodError::MethodNotFound {
+                    method: protocol_function,
+                    class,
+                }
+                .to_string(),
+            ),
+            Err(error) => exception(id, error.to_string()),
+        }
+    }
+
+    fn dispatch(
+        &mut self,
+        instance_name: &str,
+        method: &str,
+        args: Vec<SlimValue>,
+    ) -> Result<SlimValue, ExecuteMethodError> {
+        let instance = self.instances.get(instance_name).cloned();
+        let direct = if let Some(instance) = &instance {
+            let result = invoke(instance, method, args.clone());
+            if !is_missing_method(&result) {
+                return result;
+            }
+            result
+        } else if instance_name == "SlimHelperLibrary" {
+            if let Some(result) = self.helper_call(method, args.clone()) {
+                if !is_missing_method(&result) {
+                    return result;
+                }
+            }
+            Err(ExecuteMethodError::MethodNotFound {
+                method: method.into(),
+                class: "SlimHelperLibrary".into(),
+            })
+        } else {
+            Err(ExecuteMethodError::ExecutionError(format!(
+                "NO_INSTANCE {instance_name}"
+            )))
+        };
+        if let Some(instance) = instance {
+            if let Some(fixture) = instance.as_fixture() {
+                let sut = fixture
+                    .borrow_mut()
+                    .execute_system_under_test(method, args.clone());
+                if !is_missing_method(&sut) {
+                    return sut;
                 }
             }
         }
-        results
+        for (_, library) in self.libraries.iter().rev() {
+            let result = invoke(library, method, args.clone());
+            if !is_missing_method(&result) {
+                return result;
+            }
+        }
+        self.helper_call(method, args).unwrap_or(direct)
+    }
+
+    fn helper_call(
+        &mut self,
+        method: &str,
+        args: Vec<SlimValue>,
+    ) -> Option<Result<SlimValue, ExecuteMethodError>> {
+        let result = match method {
+            "get_fixture" if args.is_empty() => self.actor_fixture().map(SlimValue::Object),
+            "push_fixture" if args.is_empty() => self.actor_fixture().map(|fixture| {
+                self.actors.push(fixture);
+                SlimValue::Void
+            }),
+            "pop_fixture" if args.is_empty() => self
+                .actors
+                .pop()
+                .ok_or_else(|| {
+                    ExecuteMethodError::ExecutionError(
+                        "ACTOR_STACK_EMPTY message:<<actor stack is empty>>".into(),
+                    )
+                })
+                .map(|fixture| {
+                    self.instances.insert("scriptTableActor".into(), fixture);
+                    SlimValue::Void
+                }),
+            "clone_symbol" if args.len() == 1 => {
+                Ok(args.into_iter().next().expect("one argument checked"))
+            }
+            _ => return None,
+        };
+        Some(result)
+    }
+
+    fn actor_fixture(&self) -> Result<SlimObject, ExecuteMethodError> {
+        self.instances
+            .get("scriptTableActor")
+            .cloned()
+            .ok_or_else(|| {
+                ExecuteMethodError::ExecutionError("NO_INSTANCE scriptTableActor".into())
+            })
     }
 
     fn find_fixture(&self, class: &str) -> Option<&SlimClosureConstructor> {
-        if let Some(fixture) = self.fixtures.get(class) {
-            return Some(fixture);
-        }
-        for class_path in self.imports.iter() {
-            let class = format!("{class_path}.{class}");
-            if let Some(fixture) = self.fixtures.get(&class) {
-                return Some(fixture);
-            }
-        }
-        None
+        self.fixtures.get(class).or_else(|| {
+            self.imports
+                .iter()
+                .rev()
+                .find_map(|path| self.fixtures.get(&format!("{path}.{class}")))
+        })
     }
 
     fn parse_wire_values(&self, args: Vec<WireSlimValue>) -> Vec<SlimValue> {
         args.into_iter()
-            .map(|arg| self.parse_wire_value(arg))
+            .map(|value| self.parse_wire_value(value))
             .collect()
     }
 
     fn parse_wire_value(&self, value: WireSlimValue) -> SlimValue {
         match value {
             WireSlimValue::String(value) if value == "null" => SlimValue::Null,
-            WireSlimValue::String(value) => SlimValue::String(self.parse_symbol(value)),
+            WireSlimValue::String(value) => self
+                .whole_symbol(&value)
+                .unwrap_or_else(|| SlimValue::String(self.replace_symbols(&value))),
             WireSlimValue::List(values) => SlimValue::List(
                 values
                     .into_iter()
@@ -214,33 +330,106 @@ impl<R: Read, W: Write> SlimServer<R, W> {
         }
     }
 
-    fn parse_symbol(&self, mut value: String) -> String {
-        while let Some((before, after)) = value.split_once('$') {
-            if let Some((name, rest)) = after.split_once(' ') {
-                let mut new_value = String::from(before);
-                new_value += &self
-                    .symbols
-                    .get(name)
-                    .map(SlimValue::as_text)
-                    .unwrap_or_default();
-                new_value += " ";
-                new_value += rest;
-                value = new_value;
+    fn whole_symbol(&self, value: &str) -> Option<SlimValue> {
+        value
+            .strip_prefix('$')
+            .filter(|name| is_symbol_name(name))
+            .and_then(|name| self.symbols.get(name).cloned())
+    }
+
+    fn replace_symbols(&self, value: &str) -> String {
+        let mut result = String::with_capacity(value.len());
+        let mut characters = value.char_indices().peekable();
+        while let Some((_, character)) = characters.next() {
+            if character != '$' {
+                result.push(character);
+                continue;
+            }
+            let start = characters.peek().map_or(value.len(), |(index, _)| *index);
+            let mut end = start;
+            while let Some((index, character)) = characters.peek().copied() {
+                if !character.is_ascii_alphabetic() {
+                    break;
+                }
+                end = index + character.len_utf8();
+                characters.next();
+            }
+            if end == start {
+                result.push('$');
             } else {
-                let mut new_value = String::from(before);
-                new_value += &self
-                    .symbols
-                    .get(after)
-                    .map(SlimValue::as_text)
-                    .unwrap_or_default();
-                value = new_value;
+                let name = &value[start..end];
+                match self.symbols.get(name) {
+                    Some(symbol) => result.push_str(&symbol.as_text()),
+                    None => {
+                        result.push('$');
+                        result.push_str(name);
+                    }
+                }
             }
         }
-        value
+        result
     }
 }
 
-fn instruction_result_for_value(id: slim_protocol::Id, value: SlimValue) -> InstructionResult {
+fn invoke(
+    object: &SlimObject,
+    method: &str,
+    args: Vec<SlimValue>,
+) -> Result<SlimValue, ExecuteMethodError> {
+    let Some(fixture) = object.as_fixture() else {
+        return Err(ExecuteMethodError::MethodNotFound {
+            method: method.into(),
+            class: object.display_value().into(),
+        });
+    };
+    let result = fixture.borrow_mut().execute_method(method, args);
+    result
+}
+
+fn is_missing_method(result: &Result<SlimValue, ExecuteMethodError>) -> bool {
+    matches!(result, Err(ExecuteMethodError::MethodNotFound { .. }))
+}
+
+fn is_symbol_name(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|byte| byte.is_ascii_alphabetic())
+}
+
+fn exception(id: Id, value: String) -> InstructionResult {
+    InstructionResult::exception(id, ExceptionMessage::new(value))
+}
+
+fn malformed_instruction(id: Id, fields: Vec<String>) -> InstructionResult {
+    exception(id, format!("MALFORMED_INSTRUCTION [{}]", fields.join(",")))
+}
+
+fn wire_value_text(value: &WireSlimValue) -> String {
+    match value {
+        WireSlimValue::String(value) => value.clone(),
+        WireSlimValue::List(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(wire_value_text)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn runtime_value_without_symbols(value: WireSlimValue) -> SlimValue {
+    match value {
+        WireSlimValue::String(value) if value == "null" => SlimValue::Null,
+        WireSlimValue::String(value) => SlimValue::String(value),
+        WireSlimValue::List(values) => SlimValue::List(
+            values
+                .into_iter()
+                .map(runtime_value_without_symbols)
+                .collect(),
+        ),
+    }
+}
+
+fn instruction_result_for_value(id: Id, value: SlimValue) -> InstructionResult {
     match value {
         SlimValue::Void => InstructionResult::void(id),
         value => InstructionResult::new(id, instruction_result_value(value)),
@@ -261,496 +450,703 @@ fn instruction_result_value(value: SlimValue) -> InstructionResultValue {
 
 #[cfg(test)]
 mod tests {
-    use slim_protocol::{FromSlimReader, Id, ToSlimString};
-    use std::error::Error;
+    use super::*;
     use std::io::Cursor;
 
-    use super::*;
+    struct Fixture {
+        value: String,
+        sut: Sut,
+    }
+    struct Sut;
+    struct Library {
+        value: &'static str,
+    }
+    struct Actor(String);
+    struct FailingFixture;
 
-    #[test]
-    fn execute_import() -> Result<(), Box<dyn Error>> {
-        let mut vec = Vec::new();
-        let reader = Cursor::new(&mut vec);
-        let mut vec = Vec::new();
-        let writer = Cursor::new(&mut vec);
-        let mut slim_server = SlimServer::new(reader, writer);
-        let result = slim_server.execute_instructions(vec![
-            Instruction::Import {
-                id: Id::from("id_1"),
-                path: "ExamplePath1".into(),
-            },
-            Instruction::Import {
-                id: Id::from("id_2"),
-                path: "ExamplePath2".into(),
-            },
-        ]);
+    impl SlimFixture for Fixture {
+        fn execute_method(
+            &mut self,
+            method: &str,
+            args: Vec<SlimValue>,
+        ) -> Result<SlimValue, ExecuteMethodError> {
+            match method {
+                "echo" => Ok(args
+                    .into_iter()
+                    .next()
+                    .unwrap_or(SlimValue::String(self.value.clone()))),
+                "object" => Ok(SlimValue::Object(SlimObject::fixture(Sut, "chained"))),
+                "actor" => {
+                    let label = args
+                        .into_iter()
+                        .next()
+                        .map_or_else(|| "actor".into(), |value| value.as_text());
+                    Ok(SlimValue::Object(SlimObject::fixture(
+                        Actor(label.clone()),
+                        label,
+                    )))
+                }
+                _ => Err(ExecuteMethodError::MethodNotFound {
+                    method: method.into(),
+                    class: "Fixture".into(),
+                }),
+            }
+        }
+        fn execute_system_under_test(
+            &mut self,
+            method: &str,
+            args: Vec<SlimValue>,
+        ) -> Result<SlimValue, ExecuteMethodError> {
+            self.sut.execute_method(method, args)
+        }
+    }
+    impl SlimFixture for Sut {
+        fn execute_method(
+            &mut self,
+            method: &str,
+            _args: Vec<SlimValue>,
+        ) -> Result<SlimValue, ExecuteMethodError> {
+            match method {
+                "sut" | "from_sut" | "shared" => Ok(SlimValue::String("sut".into())),
+                "echo" => Ok(SlimValue::String("sut-echo".into())),
+                _ => Err(ExecuteMethodError::MethodNotFound {
+                    method: method.into(),
+                    class: "Sut".into(),
+                }),
+            }
+        }
+    }
+    impl SlimFixture for Library {
+        fn execute_method(
+            &mut self,
+            method: &str,
+            _args: Vec<SlimValue>,
+        ) -> Result<SlimValue, ExecuteMethodError> {
+            if matches!(method, "library" | "shared") {
+                Ok(SlimValue::String(self.value.into()))
+            } else {
+                Err(ExecuteMethodError::MethodNotFound {
+                    method: method.into(),
+                    class: "Library".into(),
+                })
+            }
+        }
+    }
+    impl SlimFixture for Actor {
+        fn execute_method(
+            &mut self,
+            method: &str,
+            _args: Vec<SlimValue>,
+        ) -> Result<SlimValue, ExecuteMethodError> {
+            match method {
+                "read" => Ok(SlimValue::String(self.0.clone())),
+                _ => Err(ExecuteMethodError::MethodNotFound {
+                    method: method.into(),
+                    class: "Actor".into(),
+                }),
+            }
+        }
+    }
+    impl SlimFixture for FailingFixture {
+        fn execute_method(
+            &mut self,
+            method: &str,
+            _args: Vec<SlimValue>,
+        ) -> Result<SlimValue, ExecuteMethodError> {
+            Err(ExecuteMethodError::MethodNotFound {
+                method: method.into(),
+                class: "FailingFixture".into(),
+            })
+        }
+    }
+    impl ClassPath for Fixture {
+        fn class_path() -> String {
+            "Fixture".into()
+        }
+    }
+    impl ClassPath for Library {
+        fn class_path() -> String {
+            "Library".into()
+        }
+    }
+    impl ClassPath for FailingFixture {
+        fn class_path() -> String {
+            "FailingFixture".into()
+        }
+    }
+    impl Constructor for Fixture {
+        fn construct(args: Vec<SlimValue>) -> Result<Self, ConstructorError> {
+            if args.len() > 1 {
+                return Err(ConstructorError::NoConstructor);
+            }
+            Ok(Self {
+                value: args
+                    .into_iter()
+                    .next()
+                    .map_or_else(|| "fixture".into(), |value| value.as_text()),
+                sut: Sut,
+            })
+        }
+    }
+    impl Constructor for Library {
+        fn construct(args: Vec<SlimValue>) -> Result<Self, ConstructorError> {
+            let [SlimValue::String(value)] = args.as_slice() else {
+                return Err(ConstructorError::NoConstructor);
+            };
+            Ok(Self {
+                value: if value == "new" { "newest" } else { "oldest" },
+            })
+        }
+    }
+    impl Constructor for FailingFixture {
+        fn construct(args: Vec<SlimValue>) -> Result<Self, ConstructorError> {
+            match args.as_slice() {
+                [SlimValue::String(value)] if value == "conversion" => {
+                    Err(ConstructorError::ArgumentParsingError("i64".into()))
+                }
+                [SlimValue::String(value)] if value == "invocation" => Err(
+                    ConstructorError::CouldNotInvoke("constructor failed".into()),
+                ),
+                _ => Err(ConstructorError::NoConstructor),
+            }
+        }
+    }
 
-        assert_eq!(
-            vec!["ExamplePath1".to_string(), "ExamplePath2".to_string()],
-            slim_server.imports
-        );
-        assert_eq!(
-            vec![
-                InstructionResult::ok(Id::from("id_1")),
-                InstructionResult::ok(Id::from("id_2"))
-            ],
-            result
-        );
-        Ok(())
+    fn server() -> SlimServer<Cursor<Vec<u8>>, Cursor<Vec<u8>>> {
+        let mut server = SlimServer::new(Cursor::new(Vec::new()), Cursor::new(Vec::new()));
+        server.add_fixture::<Fixture>();
+        server.add_fixture::<Library>();
+        server.add_fixture::<FailingFixture>();
+        server
+    }
+    fn call(id: &str, instance: &str, function: &str, args: Vec<WireSlimValue>) -> Instruction {
+        Instruction::Call {
+            id: id.into(),
+            instance: instance.into(),
+            function: function.into(),
+            args,
+        }
     }
 
     #[test]
-    fn execute_make() -> Result<(), Box<dyn Error>> {
-        let mut vec = Vec::new();
-        let reader = Cursor::new(&mut vec);
-        let mut vec = Vec::new();
-        let writer = Cursor::new(&mut vec);
-        let mut slim_server = SlimServer::new(reader, writer);
-        slim_server.add_fixture::<TestFixture>();
-        let result = slim_server.execute_instructions(vec![
-            Instruction::Make {
-                id: Id::from("m_1"),
-                instance: "Instance1".into(),
-                class: "Test.TestFixture".into(),
-                args: Vec::new(),
-            },
-            Instruction::Make {
-                id: Id::from("m_2"),
-                instance: "Instance2".into(),
-                class: "Test.TestFixture".into(),
-                args: Vec::new(),
-            },
-            Instruction::Make {
-                id: Id::from("m_3"),
-                instance: "libraryInstance".into(),
-                class: "Test.TestFixture".into(),
-                args: Vec::new(),
-            },
-        ]);
-
-        assert_eq!(2, slim_server.instances.len());
-        assert!(slim_server.instances.contains_key("Instance1"));
-        assert!(slim_server.instances.contains_key("Instance2"));
-        assert_eq!(1, slim_server.libraries.len());
-        assert!(slim_server.libraries.contains_key("libraryInstance"));
+    fn symbols_are_letter_only_and_preserve_undefined_punctuation_and_values() {
+        let mut server = server();
+        server
+            .symbols
+            .insert("A".into(), SlimValue::String("one".into()));
+        server
+            .symbols
+            .insert("B".into(), SlimValue::String("two".into()));
         assert_eq!(
-            vec![
-                InstructionResult::ok(Id::from("m_1")),
-                InstructionResult::ok(Id::from("m_2")),
-                InstructionResult::ok(Id::from("m_3")),
-            ],
-            result
+            "$missing.one-two$1",
+            server.replace_symbols("$missing.$A-$B$1")
         );
-        Ok(())
+        assert!(
+            matches!(server.parse_wire_value("$A".into()), SlimValue::String(value) if value == "one")
+        );
+        assert_eq!("$not_valid", server.replace_symbols("$not_valid"));
     }
 
     #[test]
-    fn execute_call() -> Result<(), Box<dyn Error>> {
-        let mut vec = Vec::new();
-        let reader = Cursor::new(&mut vec);
-        let mut vec = Vec::new();
-        let writer = Cursor::new(&mut vec);
-        let mut slim_server = SlimServer::new(reader, writer);
-        slim_server.add_fixture::<TestFixture>();
-        let result = slim_server.execute_instructions(vec![
+    fn dispatches_fixture_then_sut_then_newest_library_and_helpers() {
+        let mut server = server();
+        let result = server.execute_instructions(vec![
             Instruction::Make {
-                id: Id::from("m_1"),
-                instance: "Instance".into(),
-                class: "Test.TestFixture".into(),
-                args: Vec::new(),
+                id: "one".into(),
+                instance: "fixture".into(),
+                class: "Fixture".into(),
+                args: vec![],
             },
             Instruction::Make {
-                id: Id::from("m_2"),
-                instance: "libraryInstance".into(),
-                class: "Test.TestFixture".into(),
-                args: Vec::new(),
+                id: "two".into(),
+                instance: "libraryOne".into(),
+                class: "Library".into(),
+                args: vec!["old".into()],
             },
-            Instruction::Call {
-                id: Id::from("c_1"),
-                instance: "Instance".into(),
-                function: "echo".into(),
-                args: vec!["Arg".into()],
+            Instruction::Make {
+                id: "three".into(),
+                instance: "libraryTwo".into(),
+                class: "Library".into(),
+                args: vec!["new".into()],
             },
-            Instruction::Call {
-                id: Id::from("c_2"),
-                instance: "libraryInstance".into(),
-                function: "echo".into(),
-                args: vec!["Arg1".into(), "Arg2".into()],
-            },
+            call("four", "fixture", "fromSut", vec![]),
+            call("five", "fixture", "library", vec![]),
+            call("six", "fixture", "echo", vec![]),
+            call("seven", "fixture", "shared", vec![]),
         ]);
-
         assert_eq!(
-            vec![
-                InstructionResult::ok(Id::from("m_1")),
-                InstructionResult::ok(Id::from("m_2")),
-                InstructionResult::string(Id::from("c_1"), "Arg".into()),
-                InstructionResult::string(Id::from("c_2"), "Arg1,Arg2".into()),
-            ],
-            result
+            InstructionResult::string("four".into(), "sut".into()),
+            result[3]
         );
-        Ok(())
+        assert_eq!(
+            InstructionResult::string("five".into(), "newest".into()),
+            result[4]
+        );
+        assert_eq!(
+            InstructionResult::string("six".into(), "fixture".into()),
+            result[5]
+        );
+        assert_eq!(
+            InstructionResult::string("seven".into(), "sut".into()),
+            result[6]
+        );
+        assert!(
+            matches!(server.dispatch("fixture", "get_fixture", vec![]), Err(ExecuteMethodError::ExecutionError(value)) if value == "NO_INSTANCE scriptTableActor")
+        );
     }
 
     #[test]
-    fn execute_call_and_assign() -> Result<(), Box<dyn Error>> {
-        let mut vec = Vec::new();
-        let reader = Cursor::new(&mut vec);
-        let mut vec = Vec::new();
-        let writer = Cursor::new(&mut vec);
-        let mut slim_server = SlimServer::new(reader, writer);
-        slim_server.add_fixture::<TestFixture>();
-        let result = slim_server.execute_instructions(vec![
+    fn call_and_assign_preserves_objects_for_fixture_chaining_and_actors() {
+        let mut server = server();
+        let result = server.execute_instructions(vec![
             Instruction::Make {
-                id: Id::from("m_1"),
-                instance: "Instance".into(),
-                class: "Test.TestFixture".into(),
-                args: Vec::new(),
-            },
-            Instruction::Make {
-                id: Id::from("m_2"),
-                instance: "libraryInstance".into(),
-                class: "Test.TestFixture".into(),
-                args: Vec::new(),
+                id: "make".into(),
+                instance: "fixture".into(),
+                class: "Fixture".into(),
+                args: vec![],
             },
             Instruction::CallAndAssign {
-                id: Id::from("ca_1"),
-                symbol: "$Symbol1".into(),
-                instance: "Instance".into(),
-                function: "echo".into(),
-                args: vec!["Arg".into()],
+                id: "assign".into(),
+                symbol: "Actor".into(),
+                instance: "fixture".into(),
+                function: "object".into(),
+                args: vec![],
             },
-            Instruction::Call {
-                id: Id::from("c_1"),
-                instance: "Instance".into(),
-                function: "echo".into(),
-                args: vec!["$Symbol1 in symbol".into()],
+            Instruction::Make {
+                id: "copy".into(),
+                instance: "scriptTableActor".into(),
+                class: "$Actor".into(),
+                args: vec!["ignored".into()],
             },
-            Instruction::CallAndAssign {
-                id: Id::from("ca_2"),
-                symbol: "$Symbol2".into(),
-                instance: "libraryInstance".into(),
-                function: "echo".into(),
-                args: vec!["LibraryArg".into()],
-            },
-            Instruction::Call {
-                id: Id::from("c_2"),
-                instance: "libraryInstance".into(),
-                function: "echo".into(),
-                args: vec!["$Symbol2".into(), "Arg2".into()],
-            },
+            call("push", "fixture", "pushFixture", vec![]),
+            call("pop", "fixture", "popFixture", vec![]),
+            call("chained", "scriptTableActor", "sut", vec![]),
         ]);
-
+        assert!(matches!(
+            server.symbols.get("Actor"),
+            Some(SlimValue::Object(_))
+        ));
         assert_eq!(
-            vec![
-                InstructionResult::ok(Id::from("m_1")),
-                InstructionResult::ok(Id::from("m_2")),
-                InstructionResult::string(Id::from("ca_1"), "Arg".into()),
-                InstructionResult::string(Id::from("c_1"), "Arg in symbol".into()),
-                InstructionResult::string(Id::from("ca_2"), "LibraryArg".into()),
-                InstructionResult::string(Id::from("c_2"), "LibraryArg,Arg2".into()),
-            ],
-            result
+            InstructionResult::string("chained".into(), "sut".into()),
+            result[5]
         );
-        Ok(())
     }
 
     #[test]
-    fn calls_preserve_nested_lists_and_call_and_assign_keeps_the_typed_value(
-    ) -> Result<(), Box<dyn Error>> {
-        let reader = Cursor::new(Vec::new());
-        let writer = Cursor::new(Vec::new());
-        let mut slim_server = SlimServer::new(reader, writer);
-        slim_server.add_fixture::<TestFixture>();
-        let nested = WireSlimValue::List(vec![
-            WireSlimValue::String("one".into()),
-            WireSlimValue::List(vec![WireSlimValue::String("two".into())]),
-        ]);
-        let result = slim_server.execute_instructions(vec![
+    fn make_copies_opaque_object_symbols_without_calling_a_constructor() {
+        let mut server = server();
+        let object = SlimObject::new(42_i64, "opaque");
+        server
+            .symbols
+            .insert("Opaque".into(), SlimValue::Object(object.clone()));
+
+        let result = server.execute_instructions(vec![Instruction::Make {
+            id: "copy".into(),
+            instance: "copied".into(),
+            class: "$Opaque".into(),
+            args: vec!["ignored".into()],
+        }]);
+
+        assert_eq!(InstructionResult::ok("copy".into()), result[0]);
+        assert_eq!(
+            SlimValue::Object(object),
+            SlimValue::Object(server.instances.get("copied").unwrap().clone())
+        );
+    }
+
+    #[test]
+    fn actor_helpers_restore_fixture_identity_and_clone_object_symbols() {
+        let mut server = server();
+        let result = server.execute_instructions(vec![
             Instruction::Make {
-                id: Id::from("make"),
+                id: "fixture".into(),
                 instance: "fixture".into(),
-                class: "Test.TestFixture".into(),
-                args: Vec::new(),
+                class: "Fixture".into(),
+                args: vec![],
             },
             Instruction::CallAndAssign {
-                id: Id::from("call"),
-                symbol: "$nested".into(),
+                id: "first-object".into(),
+                symbol: "First".into(),
                 instance: "fixture".into(),
-                function: "nested".into(),
-                args: vec![nested],
+                function: "actor".into(),
+                args: vec!["first".into()],
             },
-            Instruction::Call {
-                id: Id::from("embedded"),
+            Instruction::Make {
+                id: "first-actor".into(),
+                instance: "scriptTableActor".into(),
+                class: "$First".into(),
+                args: vec!["ignored".into()],
+            },
+            call("push", "fixture", "pushFixture", vec![]),
+            Instruction::CallAndAssign {
+                id: "second-object".into(),
+                symbol: "Second".into(),
                 instance: "fixture".into(),
-                function: "echo".into(),
-                args: vec!["prefix $nested suffix".into()],
+                function: "actor".into(),
+                args: vec!["second".into()],
             },
+            Instruction::Make {
+                id: "second-actor".into(),
+                instance: "scriptTableActor".into(),
+                class: "$Second".into(),
+                args: vec![],
+            },
+            call("second", "scriptTableActor", "read", vec![]),
+            call("pop", "fixture", "popFixture", vec![]),
+            call("first", "scriptTableActor", "read", vec![]),
+            Instruction::CallAndAssign {
+                id: "clone".into(),
+                symbol: "Clone".into(),
+                instance: "fixture".into(),
+                function: "cloneSymbol".into(),
+                args: vec!["$First".into()],
+            },
+            Instruction::Make {
+                id: "copy".into(),
+                instance: "copiedActor".into(),
+                class: "$Clone".into(),
+                args: vec![],
+            },
+            call("copied", "copiedActor", "read", vec![]),
         ]);
 
         assert_eq!(
-            InstructionResult::list(
-                Id::from("call"),
-                vec![InstructionResultValue::List(vec![
-                    InstructionResultValue::String("one".into()),
-                    InstructionResultValue::List(vec![InstructionResultValue::String(
-                        "two".into()
-                    )]),
-                ])],
+            InstructionResult::string("second".into(), "second".into()),
+            result[6]
+        );
+        assert_eq!(
+            InstructionResult::string("first".into(), "first".into()),
+            result[8]
+        );
+        assert_eq!(
+            InstructionResult::string("copied".into(), "first".into()),
+            result[11]
+        );
+    }
+
+    #[test]
+    fn pop_fixture_reports_an_empty_actor_stack_separately() {
+        let mut server = server();
+        let result = server.execute_instructions(vec![
+            Instruction::Make {
+                id: "fixture".into(),
+                instance: "scriptTableActor".into(),
+                class: "Fixture".into(),
+                args: vec![],
+            },
+            call("pop", "scriptTableActor", "popFixture", vec![]),
+        ]);
+
+        assert_eq!(
+            InstructionResult::exception(
+                "pop".into(),
+                ExceptionMessage::new("ACTOR_STACK_EMPTY message:<<actor stack is empty>>".into())
             ),
             result[1]
         );
-        assert!(matches!(
-            slim_server.symbols.get("nested"),
-            Some(SlimValue::List(_))
-        ));
-        assert_eq!(
-            InstructionResult::string(Id::from("embedded"), "prefix [[one, [two]]] suffix".into()),
-            result[2]
-        );
-        Ok(())
     }
 
     #[test]
-    fn execute_assign() -> Result<(), Box<dyn Error>> {
-        let mut vec = Vec::new();
-        let reader = Cursor::new(&mut vec);
-        let mut vec = Vec::new();
-        let writer = Cursor::new(&mut vec);
-        let mut slim_server = SlimServer::new(reader, writer);
-        slim_server.add_fixture::<TestFixture>();
-        let result = slim_server.execute_instructions(vec![
+    fn reports_standard_constructor_and_lookup_errors() {
+        let mut server = server();
+        let result = server.execute_instructions(vec![
             Instruction::Make {
-                id: Id::from("m_1"),
-                instance: "Instance".into(),
-                class: "Test.TestFixture".into(),
-                args: Vec::new(),
+                id: "class".into(),
+                instance: "x".into(),
+                class: "Nope".into(),
+                args: vec![],
             },
-            Instruction::Assign {
-                id: Id::from("a_1"),
-                symbol: "$Symbol".into(),
-                value: "Value".into(),
+            Instruction::Make {
+                id: "ctor".into(),
+                instance: "x".into(),
+                class: "Library".into(),
+                args: vec![],
             },
-            Instruction::Call {
-                id: Id::from("c_1"),
-                instance: "Instance".into(),
+            call("instance", "missing", "x", vec![]),
+            Instruction::Make {
+                id: "conversion".into(),
+                instance: "x".into(),
+                class: "FailingFixture".into(),
+                args: vec!["conversion".into()],
+            },
+            Instruction::Make {
+                id: "invocation".into(),
+                instance: "x".into(),
+                class: "FailingFixture".into(),
+                args: vec!["invocation".into()],
+            },
+        ]);
+        assert_eq!(
+            InstructionResult::exception(
+                "class".into(),
+                ExceptionMessage::new("NO_CLASS Nope".into())
+            ),
+            result[0]
+        );
+        assert_eq!(
+            InstructionResult::exception(
+                "ctor".into(),
+                ExceptionMessage::new("NO_CONSTRUCTOR Library".into())
+            ),
+            result[1]
+        );
+        assert_eq!(
+            InstructionResult::exception(
+                "instance".into(),
+                ExceptionMessage::new("NO_INSTANCE missing".into())
+            ),
+            result[2]
+        );
+        assert_eq!(
+            InstructionResult::exception(
+                "conversion".into(),
+                ExceptionMessage::new("NO_CONVERTER_FOR_ARGUMENT_NUMBER i64".into())
+            ),
+            result[3]
+        );
+        assert_eq!(
+            InstructionResult::exception(
+                "invocation".into(),
+                ExceptionMessage::new(
+                    "COULD_NOT_INVOKE_CONSTRUCTOR FailingFixture message:<<constructor failed>>"
+                        .into()
+                )
+            ),
+            result[4]
+        );
+    }
+
+    #[test]
+    fn missing_targets_still_fall_back_to_libraries_and_preserve_method_spelling() {
+        let mut server = server();
+        let result = server.execute_instructions(vec![
+            Instruction::Make {
+                id: "fixture".into(),
+                instance: "fixture".into(),
+                class: "Fixture".into(),
+                args: vec![],
+            },
+            Instruction::Make {
+                id: "library".into(),
+                instance: "libraryOne".into(),
+                class: "Library".into(),
+                args: vec!["new".into()],
+            },
+            call("fallback", "missing", "library", vec![]),
+            call("method", "fixture", "missingMethod", vec![]),
+            call(
+                "helper",
+                "SlimHelperLibrary",
+                "cloneSymbol",
+                vec!["value".into()],
+            ),
+        ]);
+
+        assert_eq!(
+            InstructionResult::string("fallback".into(), "newest".into()),
+            result[2]
+        );
+        assert_eq!(
+            InstructionResult::exception(
+                "method".into(),
+                ExceptionMessage::new("NO_METHOD_IN_CLASS missingMethod Fixture".into())
+            ),
+            result[3]
+        );
+        assert_eq!(
+            InstructionResult::string("helper".into(), "value".into()),
+            result[4]
+        );
+    }
+
+    #[test]
+    fn invalid_assignment_names_are_malformed_without_invoking_the_call() {
+        let mut server = server();
+        let result = server.execute_instructions(vec![
+            Instruction::Make {
+                id: "fixture".into(),
+                instance: "fixture".into(),
+                class: "Fixture".into(),
+                args: vec![],
+            },
+            Instruction::CallAndAssign {
+                id: "bad".into(),
+                symbol: "Bad1".into(),
+                instance: "fixture".into(),
                 function: "echo".into(),
-                args: vec!["$Symbol in symbol".into()],
+                args: vec!["value".into()],
             },
         ]);
 
         assert_eq!(
-            vec![
-                InstructionResult::ok(Id::from("m_1")),
-                InstructionResult::ok(Id::from("a_1")),
-                InstructionResult::string(Id::from("c_1"), "Value in symbol".into()),
-            ],
-            result
+            InstructionResult::exception(
+                "bad".into(),
+                ExceptionMessage::new(
+                    "MALFORMED_INSTRUCTION [bad,callAndAssign,Bad1,fixture,echo,value]".into()
+                )
+            ),
+            result[1]
         );
-        Ok(())
+        assert!(!server.symbols.contains_key("Bad1"));
     }
 
     #[test]
-    fn integration() -> Result<(), Box<dyn Error>> {
-        let mut vec =
-            Vec::from(b"000068:[000001:000051:[000003:000004:id_1:000006:import:000008:TestPath:]:]000003:bye".as_slice());
-        let reader: Cursor<&mut Vec<u8>> = Cursor::new(&mut vec);
-        let mut output = Vec::new();
-        let writer = Cursor::new(&mut output);
-        let slim_server = SlimServer::new(reader, writer);
-        slim_server.run()?;
+    fn symbol_substitution_preserves_typed_whole_values_and_walks_nested_lists() {
+        let mut server = server();
+        server
+            .symbols
+            .insert("Text".into(), SlimValue::String("value".into()));
+        server.symbols.insert("Nothing".into(), SlimValue::Null);
+        server.symbols.insert(
+            "Items".into(),
+            SlimValue::List(vec![SlimValue::String("one".into())]),
+        );
+
+        assert_eq!(SlimValue::Null, server.parse_wire_value("$Nothing".into()));
         assert_eq!(
-            "Slim -- V0.5\n000048:[000001:000031:[000002:000004:id_1:000002:OK:]:]",
-            String::from_utf8_lossy(&output)
+            SlimValue::List(vec![SlimValue::String("one".into())]),
+            server.parse_wire_value("$Items".into())
         );
-        Ok(())
+        assert_eq!(
+            SlimValue::List(vec![
+                SlimValue::String("value".into()),
+                SlimValue::List(vec![SlimValue::Null, SlimValue::String("$Missing!".into()),]),
+            ]),
+            server.parse_wire_value(WireSlimValue::List(vec![
+                "$Text".into(),
+                WireSlimValue::List(vec!["$Nothing".into(), "$Missing!".into()]),
+            ]))
+        );
+        assert_eq!(
+            "before null after",
+            server.replace_symbols("before $Nothing after")
+        );
     }
 
     #[test]
-    fn malformed_instruction_returns_an_exception_and_keeps_the_batch_running(
-    ) -> Result<(), Box<dyn Error>> {
-        let mut input = vec![
-            vec!["bad_id", "unknown", "field"],
-            vec!["good_id", "import", "TestPath"],
-        ]
+    fn assign_preserves_literal_symbols_while_retaining_lists_and_null() {
+        let mut server = server();
+        server
+            .symbols
+            .insert("Existing".into(), SlimValue::String("expanded".into()));
+        let result = server.execute_instructions(vec![
+            Instruction::Assign {
+                id: "literal".into(),
+                symbol: "Literal".into(),
+                value: "$Existing".into(),
+            },
+            Instruction::Assign {
+                id: "list".into(),
+                symbol: "List".into(),
+                value: WireSlimValue::List(vec!["$Existing".into(), "null".into()]),
+            },
+        ]);
+
+        assert_eq!(InstructionResult::ok("literal".into()), result[0]);
+        assert_eq!(
+            Some(&SlimValue::String("$Existing".into())),
+            server.symbols.get("Literal")
+        );
+        assert_eq!(
+            Some(&SlimValue::List(vec![
+                SlimValue::String("$Existing".into()),
+                SlimValue::Null,
+            ])),
+            server.symbols.get("List")
+        );
+    }
+
+    #[test]
+    fn malformed_instructions_keep_the_batch_running() {
+        let mut server = server();
+        let result = server.execute_instructions(vec![
+            Instruction::Malformed {
+                id: "bad".into(),
+                fields: vec!["bad".into(), "unknown".into()],
+            },
+            Instruction::Import {
+                id: "good".into(),
+                path: "Fixtures".into(),
+            },
+        ]);
+
+        assert_eq!(
+            InstructionResult::exception(
+                "bad".into(),
+                ExceptionMessage::new("MALFORMED_INSTRUCTION [bad,unknown]".into())
+            ),
+            result[0]
+        );
+        assert_eq!(InstructionResult::ok("good".into()), result[1]);
+        assert_eq!(vec!["Fixtures"], server.imports);
+    }
+
+    #[test]
+    fn exact_class_names_win_and_the_newest_import_is_searched_first() {
+        let mut server = server();
+        for (class, value) in [("First.Thing", "oldest"), ("Second.Thing", "newest")] {
+            server.fixtures.insert(
+                class.into(),
+                Box::new(move |_| Ok(SlimObject::fixture(Library { value }, class))),
+            );
+        }
+        let result = server.execute_instructions(vec![
+            Instruction::Import {
+                id: "first-import".into(),
+                path: "First".into(),
+            },
+            Instruction::Import {
+                id: "second-import".into(),
+                path: "Second".into(),
+            },
+            Instruction::Make {
+                id: "short".into(),
+                instance: "short".into(),
+                class: "Thing".into(),
+                args: vec![],
+            },
+            call("short-call", "short", "library", vec![]),
+            Instruction::Make {
+                id: "exact".into(),
+                instance: "exact".into(),
+                class: "First.Thing".into(),
+                args: vec![],
+            },
+            call("exact-call", "exact", "library", vec![]),
+        ]);
+
+        assert_eq!(
+            InstructionResult::string("short-call".into(), "newest".into()),
+            result[3]
+        );
+        assert_eq!(
+            InstructionResult::string("exact-call".into(), "oldest".into()),
+            result[5]
+        );
+    }
+
+    #[test]
+    fn run_writes_a_handshake_response_and_stops_at_bye() {
+        let mut input = vec![Instruction::Import {
+            id: "import".into(),
+            path: "Fixtures".into(),
+        }]
         .to_slim_string()
         .as_bytes()
         .to_vec();
         input.extend_from_slice("bye".to_slim_string().as_bytes());
-
         let mut output = Vec::new();
-        SlimServer::new(Cursor::new(input), Cursor::new(&mut output)).run()?;
 
-        let mut response = Cursor::new(&output[b"Slim -- V0.5\n".len()..]);
-        assert_eq!(
-            vec![
-                InstructionResult::exception(
-                    Id::from("bad_id"),
-                    ExceptionMessage::new("MALFORMED_INSTRUCTION [bad_id,unknown,field]".into()),
-                ),
-                InstructionResult::ok(Id::from("good_id")),
-            ],
-            Vec::<InstructionResult>::from_reader(&mut response)?
+        SlimServer::new(Cursor::new(input), Cursor::new(&mut output))
+            .run()
+            .unwrap();
+
+        let mut expected = b"Slim -- V0.5\n".to_vec();
+        expected.extend_from_slice(
+            vec![InstructionResult::ok("import".into())]
+                .to_slim_string()
+                .as_bytes(),
         );
-        Ok(())
-    }
-
-    #[test]
-    fn parse_symbol_with_no_symbol() -> Result<(), Box<dyn Error>> {
-        let mut vec = Vec::new();
-        let reader = Cursor::new(&mut vec);
-        let mut vec = Vec::new();
-        let writer = Cursor::new(&mut vec);
-        let slim_server = SlimServer::new(reader, writer);
-        assert_eq!(
-            "No symbol",
-            slim_server.parse_symbol(String::from("No symbol"))
-        );
-        assert_eq!("", slim_server.parse_symbol(String::from("")));
-        Ok(())
-    }
-
-    #[test]
-    fn parse_symbol_with_symbol_not_in_symbol_list() -> Result<(), Box<dyn Error>> {
-        let mut vec = Vec::new();
-        let reader = Cursor::new(&mut vec);
-        let mut vec = Vec::new();
-        let writer = Cursor::new(&mut vec);
-        let slim_server = SlimServer::new(reader, writer);
-        assert_eq!("", slim_server.parse_symbol(String::from("$symbol")));
-        assert_eq!(
-            "Test ",
-            slim_server.parse_symbol(String::from("Test $symbol"))
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn parse_symbol() -> Result<(), Box<dyn Error>> {
-        let mut vec = Vec::new();
-        let reader = Cursor::new(&mut vec);
-        let mut vec = Vec::new();
-        let writer = Cursor::new(&mut vec);
-        let mut slim_server = SlimServer::new(reader, writer);
-        slim_server
-            .symbols
-            .insert("symbol".into(), "Symbol Value".into());
-        slim_server
-            .symbols
-            .insert("symbol2".into(), "Symbol Value 2".into());
-        assert_eq!(
-            "Symbol Value",
-            slim_server.parse_symbol(String::from("$symbol"))
-        );
-        assert_eq!(
-            "Test Symbol Value",
-            slim_server.parse_symbol(String::from("Test $symbol"))
-        );
-        assert_eq!(
-            "Test Symbol Value and another Symbol Value 2",
-            slim_server.parse_symbol(String::from("Test $symbol and another $symbol2"))
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn find_fixture_should_prioritize_an_exact_match() {
-        let mut vec = Vec::new();
-        let reader = Cursor::new(&mut vec);
-        let mut vec = Vec::new();
-        let writer = Cursor::new(&mut vec);
-        let mut slim_server = SlimServer::new(reader, writer);
-        add_test_fixture_with_path(&mut slim_server, "ExamplePathFixutre", Ok("First".into()));
-        add_test_fixture_with_path(
-            &mut slim_server,
-            "Namespace.ExamplePathFixutre",
-            Ok("Second".into()),
-        );
-        slim_server.imports.push("Namespace".into());
-
-        let mut result = slim_server.find_fixture("ExamplePathFixutre").unwrap()(Vec::new());
-        assert_eq!(
-            Ok(SlimValue::String("First".to_string())),
-            result.execute_method("", Vec::new())
-        );
-    }
-
-    #[test]
-    fn find_fixture_should_use_the_imports() {
-        let mut vec = Vec::new();
-        let reader = Cursor::new(&mut vec);
-        let mut vec = Vec::new();
-        let writer = Cursor::new(&mut vec);
-        let mut slim_server = SlimServer::new(reader, writer);
-        add_test_fixture_with_path(
-            &mut slim_server,
-            "Namespace1.ExamplePathFixutre",
-            Ok("First".into()),
-        );
-        add_test_fixture_with_path(
-            &mut slim_server,
-            "Namespace2.ExamplePathFixutre",
-            Ok("Second".into()),
-        );
-        slim_server.imports.push("Namespace2".into());
-        slim_server.imports.push("Namespace1".into());
-
-        let mut result = slim_server.find_fixture("ExamplePathFixutre").unwrap()(Vec::new());
-        assert_eq!(
-            Ok(SlimValue::String("Second".to_string())),
-            result.execute_method("", Vec::new())
-        );
-    }
-
-    fn add_test_fixture_with_path<R: Read, W: Write>(
-        server: &mut SlimServer<R, W>,
-        class_path: impl Into<String>,
-        return_value: Result<SlimValue, crate::ExecuteMethodError>,
-    ) {
-        server.fixtures.insert(
-            class_path.into(),
-            Box::new(move |_: Vec<SlimValue>| {
-                Box::new(TestFixture {
-                    return_value: return_value.clone(),
-                }) as Box<dyn SlimFixture>
-            }) as Box<dyn Fn(Vec<SlimValue>) -> Box<dyn SlimFixture>>,
-        );
-    }
-
-    struct TestFixture {
-        return_value: Result<SlimValue, crate::ExecuteMethodError>,
-    }
-
-    impl SlimFixture for TestFixture {
-        fn execute_method(
-            &mut self,
-            method: &str,
-            parms: Vec<SlimValue>,
-        ) -> Result<SlimValue, crate::ExecuteMethodError> {
-            match method {
-                "echo" => Ok(SlimValue::String(
-                    parms
-                        .into_iter()
-                        .map(|value| value.as_text())
-                        .collect::<Vec<_>>()
-                        .join(","),
-                )),
-                "nested" => Ok(SlimValue::List(parms)),
-                _ => self.return_value.clone(),
-            }
-        }
-    }
-
-    impl ClassPath for TestFixture {
-        fn class_path() -> String {
-            "Test.TestFixture".into()
-        }
-    }
-
-    impl Constructor for TestFixture {
-        fn construct(_: Vec<SlimValue>) -> Self {
-            Self {
-                return_value: Ok(SlimValue::String("Value".to_string())),
-            }
-        }
+        assert_eq!(expected, output);
     }
 }

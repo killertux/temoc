@@ -1,0 +1,5 @@
+error: a fixture method may carry only one `#[slim(...)]` marker
+ --> tests/ui/fixture_conflicting_markers.rs:8:5
+  |
+8 |     #[slim(sut)]
+  |     ^^^^^^^^^^^^

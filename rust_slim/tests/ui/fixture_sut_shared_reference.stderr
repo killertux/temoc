@@ -1,0 +1,5 @@
+error: a `#[slim(sut)]` method must have an &mut self receiver and no arguments
+  --> tests/ui/fixture_sut_shared_reference.rs:14:30
+   |
+14 |     pub fn system_under_test(&self) -> &Sut {
+   |                              ^^^^^

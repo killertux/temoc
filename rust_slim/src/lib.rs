@@ -20,6 +20,11 @@
 //!
 //! #[fixture]
 //! impl Calculator {
+//!     #[slim(constructor)]
+//!     pub fn new() -> Self {
+//!         Self::default()
+//!     }
+//!
 //!     pub fn set_a(&mut self, a: i64) {
 //!         self.a = a
 //!     }
@@ -68,6 +73,11 @@
 //! #
 //! # #[fixture]
 //! # impl Calculator {
+//! #     #[slim(constructor)]
+//! #     pub fn new() -> Self {
+//! #         Self::default()
+//! #     }
+//! #
 //! #     pub fn set_a(&mut self, a: i64) {
 //! #         self.a = a
 //! #     }
@@ -136,6 +146,20 @@ pub trait SlimFixture {
         method: &str,
         args: Vec<SlimValue>,
     ) -> Result<SlimValue, ExecuteMethodError>;
+
+    /// Tries the fixture's System Under Test after a method is not found on
+    /// the fixture itself.  Fixtures without an SUT keep the default, which
+    /// deliberately looks like a missing method to the dispatcher.
+    fn execute_system_under_test(
+        &mut self,
+        method: &str,
+        _args: Vec<SlimValue>,
+    ) -> Result<SlimValue, ExecuteMethodError> {
+        Err(ExecuteMethodError::MethodNotFound {
+            method: method.into(),
+            class: "SystemUnderTest".into(),
+        })
+    }
 }
 
 /// ClassPath that will be used in the construction of the fixture.
@@ -155,18 +179,23 @@ pub trait ClassPath {
     fn class_path() -> String;
 }
 
-/// Trait used to construct the fixture. It is auto-implemented for fixtures that also implement Default.
+/// Trait used to construct a fixture from SliM constructor arguments.
+///
+/// Implementations must report an arity mismatch as [`ConstructorError::NoConstructor`],
+/// conversion failures as [`ConstructorError::ArgumentParsingError`], and an
+/// error from the constructor itself as [`ConstructorError::CouldNotInvoke`].
 pub trait Constructor {
-    fn construct(args: Vec<SlimValue>) -> Self;
+    fn construct(args: Vec<SlimValue>) -> Result<Self, ConstructorError>
+    where
+        Self: Sized;
 }
 
-impl<T> Constructor for T
-where
-    T: Default,
-{
-    fn construct(_args: Vec<SlimValue>) -> T {
-        T::default()
-    }
+/// Failure while selecting, converting for, or invoking a fixture constructor.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum ConstructorError {
+    NoConstructor,
+    ArgumentParsingError(String),
+    CouldNotInvoke(String),
 }
 
 /// Error that can happen while trying to execute a method in a feature.

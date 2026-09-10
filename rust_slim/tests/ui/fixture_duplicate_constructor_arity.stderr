@@ -1,0 +1,5 @@
+error: a fixture may declare only one constructor with 1 arguments
+  --> tests/ui/fixture_duplicate_constructor_arity.rs:13:9
+   |
+13 |     pub fn another(_other: String) -> Self {
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

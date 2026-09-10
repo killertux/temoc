@@ -16,6 +16,11 @@ mod fixtures {
 
     #[fixture]
     impl CalculatorFixture {
+        #[slim(constructor)]
+        pub fn new() -> Self {
+            Self::default()
+        }
+
         pub fn set_a(&mut self, a: i64) {
             self.a = a
         }
