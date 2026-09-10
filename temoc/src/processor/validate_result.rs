@@ -20,9 +20,7 @@ pub fn validate_result(
     if expected_result.len() != result.len() {
         bail!("Number of instruction results `{}` does not matched the expected number of results `{}`", result.len(), expected_result.len())
     }
-    for (result, (mut expected_result, snooze)) in
-        result.into_iter().zip(expected_result.into_iter())
-    {
+    for (result, (mut expected_result, snooze)) in result.into_iter().zip(expected_result) {
         if expected_result.id != result.id {
             failures.push((
                 format!(

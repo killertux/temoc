@@ -130,7 +130,7 @@ fn print_fail_or_ok(show_snoozed: bool, failures: Vec<(String, Snooze)>) -> Resu
         for (failure, snooze) in failures.into_iter() {
             let should_snooze = snooze.should_snooze();
             if should_snooze && show_snoozed {
-                let snooze_string = format!(" -- snoozed until {}", &snooze);
+                let snooze_string = format!(" -- snoozed until {}", snooze);
                 println!(
                     "{failure}{}",
                     if should_snooze { &snooze_string } else { "" }
