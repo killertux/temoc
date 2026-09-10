@@ -122,4 +122,4 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: run
-          args: -- -c Config.toml.example
+          args: --bin temoc -- -c Config.toml.example
