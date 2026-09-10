@@ -1,9 +1,9 @@
-# Command to execute the server. %p will be replaced by the port for the connection
+# Command to execute the server. With port 1, %p selects the SliM stdin/stdout transport.
 execute_server_command = "cargo run --example calculator %p"
-# Base port that will be used to start the connection pool
-port = 8085
-# The size of the pool of ports to cycle through
-pool_size = 20
+# SliM reserves port 1 for communication over the child process's stdin/stdout.
+port = 1
+# The TCP connection pool is unused for port 1; keep one logical server slot.
+pool_size = 1
 # Dir with markdown files to be tested
 test_dir = "temoc/examples/"
 # File extensions to filter for markdowns. Default is "md". Not case sensitive
