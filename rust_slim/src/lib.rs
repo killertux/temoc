@@ -1,4 +1,4 @@
-//! A (not yet complete) implementation of a SlimServer for acceptance testing.
+//! A SliM V0.5 server implementation for acceptance testing.
 //!
 //! This was implementating using the documentation found [here](http://fitnesse.org/FitNesse.UserGuide.WritingAcceptanceTests.SliM.SlimProtocol)
 //!
@@ -83,6 +83,8 @@ pub use server::{
 use std::fmt::{Display, Formatter};
 pub use to_slim_result_string::*;
 pub use utils::from_rust_module_path_to_class_path;
+#[cfg(feature = "html-hash")]
+pub use value::{parse_html_hash, SlimHash};
 pub use value::{FromSlimValue, IntoSlimValue, SlimObject, SlimValue};
 
 mod server;

@@ -15,7 +15,11 @@ This project is heavily inspired on fitnesse. We even use the same Slim Protocol
 
 ## How to test my project?
 
-We use the [Slim Protocol](https://fitnesse.org/FitNesse/UserGuide/WritingAcceptanceTests/SliM/SlimProtocol.html) to talk with the system under test. [Here](https://fitnesse.org/PlugIns.html) you can find a list of plugins for it in multiple languages. And [Here](https://github.com/killertux/temoc/tree/master/rust_slim) you can find an incomplete implementation for Rust.
+We use the [Slim Protocol](https://fitnesse.org/FitNesse/UserGuide/WritingAcceptanceTests/SliM/SlimProtocol.html) to talk with the system under test. [Here](https://fitnesse.org/PlugIns.html) you can find a list of plugins for it in multiple languages. This repository also contains our [SliM V0.5 implementation for Rust](https://github.com/killertux/temoc/tree/master/rust_slim).
+
+Temoc preserves recursive SliM result values when a Markdown table stores and
+later compares a symbol, so nested lists returned by `callAndAssign` remain
+structured instead of being flattened to strings.
 
 You will use one of these plugins to write the test fixtures in your project. Fixtures are glue code that serves as intermediary between Temoc and your software.
 
@@ -27,7 +31,7 @@ Temoc is written in rust, you can install the rust toolchain [here](https://rust
 
 ## Running Temoc
 
-Once you have compiled it, you can run `./temoc --help` to see the list of commands. Basically you will need to specify a command to start the slim server (your plugin should help you on how to do this), a port to be used in the connection (current we don't support STDIN,STOUT communication) and a list of markdown files to test. You can also write a configuration file to have a default list of parameters, you can look at an example [here](https://github.com/killertux/temoc/tree/master/Config.toml.example)
+Once you have compiled it, you can run `./temoc --help` to see the list of commands. Basically you will need to specify a command to start the slim server (your plugin should help you on how to do this), a port to be used in the connection, and a list of markdown files to test. Port `1` uses the V0.5 stdin/stdout transport; any other port uses TCP. You can also write a configuration file to have a default list of parameters, you can look at an example [here](https://github.com/killertux/temoc/tree/master/Config.toml.example)
 
 Here is an example of the output of running Temoc for the [Calculator Example](https://github.com/killertux/temoc/tree/master/temoc/examples)
 

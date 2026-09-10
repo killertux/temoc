@@ -10,7 +10,7 @@ use crate::processor::{
 use anyhow::{anyhow, Result};
 use markdown::mdast::Node;
 use regex::Regex;
-use slim_protocol::{Instruction, SlimConnection};
+use slim_protocol::{Instruction, InstructionResultValue, SlimConnection};
 use std::collections::HashMap;
 use std::{
     fs::read_to_string,
@@ -24,15 +24,15 @@ mod validate_result;
 
 #[derive(Debug, Default)]
 pub struct State {
-    symbols: HashMap<String, String>,
+    symbols: HashMap<String, InstructionResultValue>,
 }
 
 impl State {
-    pub fn set_symbol(&mut self, key: String, value: String) {
+    pub fn set_symbol(&mut self, key: String, value: InstructionResultValue) {
         self.symbols.insert(key, value);
     }
 
-    pub fn get_symbol(&self, key: &str) -> Option<&String> {
+    pub fn get_symbol(&self, key: &str) -> Option<&InstructionResultValue> {
         self.symbols.get(key)
     }
 }

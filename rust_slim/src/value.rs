@@ -8,6 +8,11 @@ use crate::{ExecuteMethodError, SlimControlException};
 use chrono::NaiveDate;
 use std::{any::Any, cell::RefCell, fmt, rc::Rc};
 
+#[cfg(feature = "html-hash")]
+use scraper::{Html, Selector};
+#[cfg(feature = "html-hash")]
+use std::collections::BTreeMap;
+
 enum SlimObjectValue {
     Opaque(Rc<dyn Any>),
     Fixture(Rc<RefCell<dyn crate::SlimFixture>>),
@@ -170,6 +175,141 @@ pub trait IntoSlimValue {
     fn into_slim_value(self) -> Result<SlimValue, ExecuteMethodError>;
 }
 
+/// A two-column HTML table sent by FitNesse's optional hash widget.
+///
+/// Enable the `html-hash` Cargo feature to use this converter as a fixture
+/// argument.  Each row must contain exactly two `<td>` cells; duplicate keys
+/// replace the earlier value, matching a map's usual insertion behavior.
+#[cfg(feature = "html-hash")]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SlimHash(BTreeMap<String, String>);
+
+#[cfg(feature = "html-hash")]
+impl SlimHash {
+    pub fn new(values: BTreeMap<String, String>) -> Self {
+        Self(values)
+    }
+
+    pub fn as_map(&self) -> &BTreeMap<String, String> {
+        &self.0
+    }
+
+    pub fn into_inner(self) -> BTreeMap<String, String> {
+        self.0
+    }
+}
+
+/// Parses the V0.5 optional HTML hash representation into a deterministic
+/// Rust map. Missing or multiple tables produce an empty map, while rows that
+/// do not contain exactly two cells are ignored, matching FitNesse's converter.
+#[cfg(feature = "html-hash")]
+pub fn parse_html_hash(input: &str) -> Result<SlimHash, ExecuteMethodError> {
+    let document = Html::parse_fragment(input);
+    let table_selector = Selector::parse("table").expect("a fixed CSS selector is valid");
+    let row_selector = Selector::parse("tr").expect("a fixed CSS selector is valid");
+    let tables = document.select(&table_selector).collect::<Vec<_>>();
+    if tables.len() != 1 {
+        return Ok(SlimHash::default());
+    }
+
+    let mut map = BTreeMap::new();
+    for row in tables[0].select(&row_selector) {
+        let cells = row
+            .children()
+            .filter_map(scraper::ElementRef::wrap)
+            .filter(|cell| cell.value().name() == "td")
+            .collect::<Vec<_>>();
+        let [key, value] = cells.as_slice() else {
+            continue;
+        };
+        map.insert(
+            unescape_html_entities(&key.inner_html()),
+            unescape_html_entities(&value.inner_html()),
+        );
+    }
+    Ok(SlimHash(map))
+}
+
+#[cfg(feature = "html-hash")]
+impl IntoSlimValue for SlimHash {
+    fn into_slim_value(self) -> Result<SlimValue, ExecuteMethodError> {
+        let rows = self
+            .0
+            .into_iter()
+            .map(|(key, value)| {
+                format!(
+                    "<tr><td>{}</td><td>{}</td></tr>",
+                    escape_html(&key),
+                    escape_html(&value)
+                )
+            })
+            .collect::<String>();
+        Ok(SlimValue::String(format!("<table>{rows}</table>")))
+    }
+}
+
+#[cfg(feature = "html-hash")]
+fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('\"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+#[cfg(feature = "html-hash")]
+fn unescape_html_entities(value: &str) -> String {
+    let mut decoded = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(start) = rest.find('&') {
+        decoded.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let Some(end) = after.find(';') else {
+            decoded.push('&');
+            rest = after;
+            continue;
+        };
+        let entity = &after[..end];
+        let character = match entity {
+            "amp" => Some('&'),
+            "lt" => Some('<'),
+            "gt" => Some('>'),
+            "quot" => Some('\"'),
+            "apos" | "#39" => Some('\''),
+            numeric if numeric.starts_with("#x") || numeric.starts_with("#X") => {
+                u32::from_str_radix(&numeric[2..], 16)
+                    .ok()
+                    .and_then(char::from_u32)
+            }
+            numeric if numeric.starts_with('#') => {
+                numeric[1..].parse::<u32>().ok().and_then(char::from_u32)
+            }
+            _ => None,
+        };
+        if let Some(character) = character {
+            decoded.push(character);
+        } else {
+            decoded.push('&');
+            decoded.push_str(entity);
+            decoded.push(';');
+        }
+        rest = &after[end + 1..];
+    }
+    decoded.push_str(rest);
+    decoded
+}
+
+#[cfg(feature = "html-hash")]
+impl FromSlimValue for SlimHash {
+    fn from_slim_value(value: SlimValue) -> Result<Self, ExecuteMethodError> {
+        let SlimValue::String(value) = value else {
+            return Err(conversion_error("an HTML hash table", &value));
+        };
+        parse_html_hash(&value)
+    }
+}
+
 impl FromSlimValue for SlimValue {
     fn from_slim_value(value: SlimValue) -> Result<Self, ExecuteMethodError> {
         Ok(value)
@@ -296,10 +436,14 @@ where
     T: FromSlimValue,
 {
     fn from_slim_value(value: SlimValue) -> Result<Self, ExecuteMethodError> {
-        let SlimValue::List(values) = value else {
-            return Err(ExecuteMethodError::ArgumentParsingError(
-                "expected a list".into(),
-            ));
+        let values = match value {
+            SlimValue::List(values) => values,
+            SlimValue::String(value) => parse_string_list(&value)?,
+            value => {
+                return Err(ExecuteMethodError::ArgumentParsingError(format!(
+                    "expected a list or bracketed list string, got {value:?}"
+                )));
+            }
         };
         values.into_iter().map(T::from_slim_value).collect()
     }
@@ -364,6 +508,69 @@ fn conversion_error(expected: &str, actual: &SlimValue) -> ExecuteMethodError {
     ExecuteMethodError::ArgumentParsingError(format!("expected {expected}, got {actual:?}"))
 }
 
+/// Parses the documented Java-style textual list form (`[a, b, c]`) used by
+/// older SliM clients. Recursive wire lists remain the preferred lossless
+/// representation, while this compatibility parser also accepts nested
+/// bracketed lists such as `[a, [b, c]]`.
+fn parse_string_list(value: &str) -> Result<Vec<SlimValue>, ExecuteMethodError> {
+    let value = value.trim();
+    let contents = value
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .ok_or_else(|| {
+            ExecuteMethodError::ArgumentParsingError(
+                "expected a bracketed list string such as `[a, b, c]`".into(),
+            )
+        })?;
+    if contents.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut values = Vec::new();
+    let mut depth = 0_usize;
+    let mut start = 0_usize;
+    for (index, character) in contents.char_indices() {
+        match character {
+            '[' => depth += 1,
+            ']' => {
+                depth = depth.checked_sub(1).ok_or_else(|| {
+                    ExecuteMethodError::ArgumentParsingError("unbalanced bracketed list".into())
+                })?
+            }
+            ',' if depth == 0 => {
+                values.push(parse_string_list_item(&contents[start..index])?);
+                start = index + character.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return Err(ExecuteMethodError::ArgumentParsingError(
+            "unbalanced bracketed list".into(),
+        ));
+    }
+    values.push(parse_string_list_item(&contents[start..])?);
+    Ok(values)
+}
+
+fn parse_string_list_item(value: &str) -> Result<SlimValue, ExecuteMethodError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(ExecuteMethodError::ArgumentParsingError(
+            "empty values in a bracketed list are not supported".into(),
+        ));
+    }
+    if value.starts_with('[') {
+        parse_string_list(value).map(SlimValue::List)
+    } else if value.contains(']') {
+        Err(ExecuteMethodError::ArgumentParsingError(
+            "unbalanced bracketed list".into(),
+        ))
+    } else {
+        Ok(SlimValue::String(value.into()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,6 +595,23 @@ mod tests {
             vec![vec![1_i64, 2], vec![3]],
             Vec::<Vec<i64>>::from_slim_value(value).unwrap()
         );
+    }
+
+    #[test]
+    fn collections_accept_documented_bracketed_string_lists() {
+        assert_eq!(
+            vec![1_i64, 2, 3],
+            Vec::<i64>::from_slim_value(SlimValue::String("[1, 2, 3]".into())).unwrap()
+        );
+        assert_eq!(
+            vec![vec![1_i64], vec![2, 3]],
+            Vec::<Vec<i64>>::from_slim_value(SlimValue::String("[[1], [2, 3]]".into())).unwrap()
+        );
+        assert_eq!(
+            [1_i64, 2],
+            <[i64; 2]>::from_slim_value(SlimValue::String("[1, 2]".into())).unwrap()
+        );
+        assert!(Vec::<i64>::from_slim_value(SlimValue::String("[1, ]".into())).is_err());
     }
 
     #[test]
@@ -451,6 +675,45 @@ mod tests {
         assert_eq!(
             Err(ExecuteMethodError::ExecutionError("fixture failed".into())),
             value.into_slim_value()
+        );
+    }
+
+    #[cfg(feature = "html-hash")]
+    #[test]
+    fn html_hash_converter_accepts_the_documented_two_column_table() {
+        let hash = SlimHash::from_slim_value(SlimValue::String(
+            "<table class='hash'><tr><td>name</td><td>one &amp; two</td></tr><tr><td>count</td><td>&#50;</td></tr></table>".into(),
+        ))
+        .unwrap();
+        assert_eq!(Some(&"one & two".into()), hash.as_map().get("name"));
+        assert_eq!(Some(&"2".into()), hash.as_map().get("count"));
+    }
+
+    #[cfg(feature = "html-hash")]
+    #[test]
+    fn html_hash_converter_ignores_invalid_tables_and_rows() {
+        assert_eq!(SlimHash::default(), parse_html_hash("not a table").unwrap());
+        assert_eq!(
+            SlimHash::default(),
+            parse_html_hash("<table></table><table></table>").unwrap()
+        );
+        let hash = parse_html_hash(
+            "<table><tr><td>ignored</td></tr><tr><td>kept</td><td>value</td></tr></table>",
+        )
+        .unwrap();
+        assert_eq!(Some(&"value".into()), hash.as_map().get("kept"));
+        assert!(!hash.as_map().contains_key("ignored"));
+    }
+
+    #[cfg(feature = "html-hash")]
+    #[test]
+    fn html_hash_converter_serializes_an_escaped_table() {
+        let hash = SlimHash::new(BTreeMap::from([("<key>".into(), "one & two".into())]));
+        assert_eq!(
+            SlimValue::String(
+                "<table><tr><td>&lt;key&gt;</td><td>one &amp; two</td></tr></table>".into()
+            ),
+            hash.into_slim_value().unwrap()
         );
     }
 }
