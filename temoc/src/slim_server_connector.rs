@@ -20,8 +20,8 @@ pub fn build_slim_server_connector(
         })
     } else {
         let mut rng = rand::thread_rng();
-        let available = u32::from(u16::MAX) - u32::from(port) + 1;
-        let pool_size = u32::from(pool_size.max(1)).min(available) as u16;
+        let available = (u16::MAX - port).saturating_add(1);
+        let pool_size = pool_size.max(1).min(available);
         let offset = rng.gen_range(0..pool_size);
         Box::new(TcpSlimServerConnector {
             command,
@@ -254,8 +254,8 @@ mod tests {
         )
         .unwrap();
 
-        assert!(stdout.is_empty());
-        assert!(stderr.is_empty());
+        assert_eq!(stdout, Vec::<u8>::new());
+        assert_eq!(stderr, Vec::<u8>::new());
     }
 
     #[test]

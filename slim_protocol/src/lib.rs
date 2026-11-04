@@ -17,7 +17,8 @@ where
 {
     reader: BufReader<R>,
     writer: W,
-    _version: SlimVersion,
+    #[allow(dead_code)]
+    version: SlimVersion,
     closed: bool,
 }
 
@@ -42,6 +43,12 @@ where
     R: Read,
     W: Write,
 {
+    /// Reads the server's version header and opens the connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NewSlimConnectionError`] if the header cannot be read or
+    /// names an unsupported `SliM` version.
     pub fn new(mut reader: R, writer: W) -> Result<Self, NewSlimConnectionError> {
         let mut buf = [0_u8; 13];
         reader.read_exact(&mut buf)?;
@@ -49,11 +56,17 @@ where
         Ok(Self {
             reader: BufReader::new(reader),
             writer,
-            _version: version,
+            version,
             closed: false,
         })
     }
 
+    /// Sends a batch of instructions and waits for their results.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SendInstructionsError`] if the connection fails or the
+    /// response cannot be parsed.
     pub fn send_instructions(
         &mut self,
         data: &[Instruction],
@@ -63,6 +76,11 @@ where
         Ok(Vec::from_reader(&mut self.reader)?)
     }
 
+    /// Says goodbye to the server and closes the connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if writing the goodbye message fails.
     pub fn close(mut self) -> Result<(), std::io::Error> {
         self.say_goodbye()?;
         self.closed = true;
@@ -151,7 +169,7 @@ impl Display for Id {
     }
 }
 
-/// The recursive value model used by the SliM wire protocol.
+/// The recursive value model used by the `SliM` wire protocol.
 ///
 /// Runtime-only values such as fixture objects are deliberately not represented
 /// here; they belong to the execution layer.
@@ -275,13 +293,13 @@ impl Display for InstructionResultValue {
                 "Exception `{}`",
                 message.pretty_message().unwrap_or(message.raw_message())
             )?,
-            InstructionResultValue::String(value) => write!(f, "`{}`", value)?,
+            InstructionResultValue::String(value) => write!(f, "`{value}`")?,
             InstructionResultValue::List(value) => write!(
                 f,
                 "[{}]",
                 value
                     .iter()
-                    .map(|v| v.to_string())
+                    .map(std::string::ToString::to_string)
                     .collect::<Vec<String>>()
                     .join(",")
             )?,
@@ -306,6 +324,12 @@ impl ExceptionMessage {
         &self.0
     }
 
+    /// Extracts the readable part of the exception message.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExceptionPrettyMessageError`] if the message has an opening
+    /// `message:<<` marker without a closing `>>`.
     pub fn pretty_message(&self) -> Result<&str, ExceptionPrettyMessageError> {
         if let Some(pos) = self.0.find("message:<<") {
             let (_, rest) = self.0.split_at(pos + 10);
@@ -362,7 +386,7 @@ mod test {
         let mut writer = Vec::new();
         let connection =
             SlimConnection::new(Cursor::new(b"Slim -- V0.5\n"), Cursor::new(&mut writer))?;
-        assert_eq!(SlimVersion::V0_5, connection._version);
+        assert_eq!(SlimVersion::V0_5, connection.version);
         drop(connection);
         assert_eq!("000003:bye".to_string(), String::from_utf8_lossy(&writer));
         Ok(())

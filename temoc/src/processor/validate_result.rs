@@ -104,7 +104,7 @@ impl PartialEq<InstructionResultValue> for ExpectedResultValue {
                 for (a, b) in expected_list.iter().zip(actual_list.iter()) {
                     if a != b {
                         return false;
-                    };
+                    }
                 }
                 true
             }
@@ -124,7 +124,7 @@ fn failure_expected_result_detail_message(
     let method_name = &expected_result.method_name;
     match expected_result.value {
         #[cfg(test)]
-        ExpectedResultValue::Any => "".into(),
+        ExpectedResultValue::Any => String::new(),
         ExpectedResultValue::Ok => format!("in {file_path}:{position}"),
         ExpectedResultValue::NullOrVoid
         | ExpectedResultValue::NullOrVoidOrMethodNotFound
@@ -150,7 +150,7 @@ mod test {
     use super::*;
 
     #[test]
-    fn incorrect_number_of_results() -> Result<()> {
+    fn incorrect_number_of_results() {
         let result = validate_result(
             "file_path.md",
             vec![],
@@ -161,7 +161,6 @@ mod test {
             "Number of instruction results `1` does not matched the expected number of results `0`",
             result.expect_err("Expect error").to_string()
         );
-        Ok(())
     }
 
     #[test]
@@ -296,7 +295,7 @@ mod test {
             ],
             &mut State::default(),
         )?;
-        assert!(result.is_empty());
+        assert_eq!(result, Vec::new());
         Ok(())
     }
 
@@ -480,9 +479,9 @@ mod test {
         )?;
         assert_eq!(
             vec![
-                (format!("Different ID in response. Expected {id_1} but got {id_2}",), Snooze::not_snooze()),
+                (format!("Different ID in response. Expected {id_1} but got {id_2}"), Snooze::not_snooze()),
                 ("Expected NULL or VOID or NOT FOUND, got OK in test_file.md:0:0".to_string(), Snooze::not_snooze()),
-                (format!("Different ID in response. Expected {id_1} but got {id_2}",), Snooze::not_snooze()),
+                (format!("Different ID in response. Expected {id_1} but got {id_2}"), Snooze::not_snooze()),
                 (format!(
                     "Expected NULL or VOID, got OK in test_file.md:{position} for method call TestMethod"
                 ), Snooze::not_snooze()),
@@ -492,7 +491,7 @@ mod test {
                 (format!(
                     "Expected OK, got VOID in test_file.md:{position}"
                 ), Snooze::not_snooze()),
-                (format!("Different ID in response. Expected {id_1} but got {id_2}",),Snooze::not_snooze()),
+                (format!("Different ID in response. Expected {id_1} but got {id_2}"),Snooze::not_snooze()),
                 (format!(
                     "Expected OK, got `Value` in test_file.md:{position}"
                 ), Snooze::not_snooze()),
@@ -502,12 +501,12 @@ mod test {
                 (format!(
                     "Expected `Value`, got OK in test_file.md:{position} for method call TestMethod"
                 ), Snooze::not_snooze()),
-                (format!("Different ID in response. Expected {id_1} but got {id_2}",), Snooze::not_snooze()),
+                (format!("Different ID in response. Expected {id_1} but got {id_2}"), Snooze::not_snooze()),
                 (format!(
                     "Expected `Value`, got `WrongValue` in test_file.md:{position} for method call TestMethod"
                 ), Snooze::not_snooze()),
-                (format!("Different ID in response. Expected {id_1} but got {id_2}",), Snooze::not_snooze()),
-                (format!("Different ID in response. Expected {id_1} but got {id_2}",), Snooze::not_snooze()),
+                (format!("Different ID in response. Expected {id_1} but got {id_2}"), Snooze::not_snooze()),
+                (format!("Different ID in response. Expected {id_1} but got {id_2}"), Snooze::not_snooze()),
                 (format!(
                     "Expected [], got VOID in test_file.md:{position} for method call TestMethod"
                 ), Snooze::not_snooze()),
@@ -546,7 +545,7 @@ mod test {
             vec![InstructionResult::string(id.clone(), "Value".into())],
             &mut state,
         )?;
-        assert!(result.is_empty());
+        assert_eq!(result, Vec::new());
         assert_eq!(
             &InstructionResultValue::String("Value".into()),
             state.get_symbol("Symbol").unwrap()
@@ -608,7 +607,7 @@ mod test {
     }
 
     #[test]
-    fn test_assert_symbol_not_found() -> Result<()> {
+    fn test_assert_symbol_not_found() {
         let id = Id::new();
         let position = Position::new(0, 0);
         let method_name = MethodName("TestMethod".into(), position.clone());
@@ -631,7 +630,6 @@ mod test {
             "Symbol `Symbol` not found",
             result.expect_err("Expect error").to_string()
         );
-        Ok(())
     }
 
     #[test]
@@ -668,7 +666,7 @@ mod test {
             ],
             &mut state,
         )?;
-        assert!(result.is_empty());
+        assert_eq!(result, Vec::new());
         Ok(())
     }
 
@@ -705,7 +703,7 @@ mod test {
             ],
             &mut state,
         )?;
-        assert!(failures.is_empty());
+        assert_eq!(failures, Vec::new());
         assert_eq!(Some(&nested), state.get_symbol("Nested"));
         Ok(())
     }

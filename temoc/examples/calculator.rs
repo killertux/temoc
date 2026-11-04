@@ -20,11 +20,11 @@ mod fixtures {
         }
 
         pub fn set_a(&mut self, a: i64) {
-            self.a = a
+            self.a = a;
         }
 
         pub fn set_b(&mut self, b: i64) {
-            self.b = b
+            self.b = b;
         }
 
         pub fn sum(&self) -> i64 {

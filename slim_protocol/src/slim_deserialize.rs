@@ -16,6 +16,12 @@ pub enum FromSlimReaderError {
 }
 
 pub trait FromSlimReader {
+    /// Reads one value from `reader`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FromSlimReaderError`] if reading fails or the data is not a
+    /// valid `SliM` message.
     fn from_reader(reader: &mut impl BufRead) -> Result<Self, FromSlimReaderError>
     where
         Self: Sized;
@@ -47,7 +53,7 @@ where
         let payload = read_outer_payload(reader)?;
         parse_list_payload(&payload)?
             .into_iter()
-            .map(|item| T::from_reader(&mut Cursor::new(outer_frame(item))))
+            .map(|item| T::from_reader(&mut Cursor::new(outer_frame(&item))))
             .collect()
     }
 }
@@ -73,7 +79,7 @@ impl FromSlimReader for InstructionResult {
 
 impl FromSlimReader for Instruction {
     fn from_reader(reader: &mut impl BufRead) -> Result<Self, FromSlimReaderError> {
-        instruction_from_values(parse_list_payload(&read_outer_payload(reader)?)?)
+        instruction_from_values(&parse_list_payload(&read_outer_payload(reader)?)?)
     }
 }
 
@@ -86,7 +92,9 @@ impl FromSlimReader for ByeOrSlimInstructions {
 
         let instructions = parse_list_payload(&payload)?
             .into_iter()
-            .map(|instruction| parse_list_payload(&instruction).and_then(instruction_from_values))
+            .map(|instruction| {
+                parse_list_payload(&instruction).and_then(|fields| instruction_from_values(&fields))
+            })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self::Instructions(instructions))
     }
@@ -152,11 +160,11 @@ fn parse_slim_value(value: String) -> Result<SlimValue, FromSlimReaderError> {
     Ok(SlimValue::String(value))
 }
 
-fn instruction_from_values(fields: Vec<String>) -> Result<Instruction, FromSlimReaderError> {
+fn instruction_from_values(fields: &[String]) -> Result<Instruction, FromSlimReaderError> {
     let id = Id::from(fields.first().cloned().unwrap_or_default());
     let malformed = || Instruction::Malformed {
         id: id.clone(),
-        fields: fields.clone(),
+        fields: fields.to_vec(),
     };
     let Some(operation) = fields.get(1).map(String::as_str) else {
         return Ok(malformed());
@@ -222,7 +230,7 @@ fn read_outer_payload(reader: &mut impl BufRead) -> Result<String, FromSlimReade
         .map_err(|_| FromSlimReaderError::Other("Message payload is not valid UTF-8".into()))
 }
 
-fn outer_frame(payload: String) -> Vec<u8> {
+fn outer_frame(payload: &str) -> Vec<u8> {
     format!("{:06}:{}", payload.len(), payload).into_bytes()
 }
 

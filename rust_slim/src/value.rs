@@ -1,4 +1,4 @@
-//! Values passed between the SliM executor and Rust fixtures.
+//! Values passed between the `SliM` executor and Rust fixtures.
 //!
 //! `SlimValue` deliberately differs from `slim_protocol::SlimValue`: the
 //! protocol only has strings and lists, while fixture execution also needs
@@ -27,7 +27,7 @@ impl Clone for SlimObjectValue {
     }
 }
 
-/// An opaque, cloneable object kept by a single-threaded SliM server.
+/// An opaque, cloneable object kept by a single-threaded `SliM` server.
 ///
 /// The handle uses `Rc`, rather than `Arc`, because fixtures are executed by
 /// one server thread. `display` is used only when an object must temporarily
@@ -47,7 +47,7 @@ impl SlimObject {
     }
 
     /// Creates an object that can later be copied into the server's fixture
-    /// registry by the SliM `make` fixture-chaining behavior.
+    /// registry by the `SliM` `make` fixture-chaining behavior.
     pub fn fixture<T: crate::SlimFixture + 'static>(value: T, display: impl Into<String>) -> Self {
         Self {
             value: SlimObjectValue::Fixture(Rc::new(RefCell::new(value))),
@@ -62,6 +62,11 @@ impl SlimObject {
         }
     }
 
+    /// Takes the opaque value out of this object as `T`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the object unchanged if it does not hold a `T`.
     pub fn downcast<T: Any>(self) -> Result<Rc<T>, Self> {
         let Self { value, display } = self;
         match value {
@@ -164,6 +169,12 @@ impl SlimValue {
 /// Implement this trait for application-specific argument types to use them
 /// in a `#[fixture]` method.
 pub trait FromSlimValue: Sized {
+    /// Converts a runtime value into this type.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecuteMethodError`] if the value cannot be represented as
+    /// this type.
     fn from_slim_value(value: SlimValue) -> Result<Self, ExecuteMethodError>;
 }
 
@@ -172,10 +183,16 @@ pub trait FromSlimValue: Sized {
 /// Application types can implement this trait directly without depending on
 /// the wire protocol representation.
 pub trait IntoSlimValue {
+    /// Converts this value into a runtime value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecuteMethodError`] if the value cannot be converted or
+    /// represents a failed method.
     fn into_slim_value(self) -> Result<SlimValue, ExecuteMethodError>;
 }
 
-/// A two-column HTML table sent by FitNesse's optional hash widget.
+/// A two-column HTML table sent by `FitNesse`'s optional hash widget.
 ///
 /// Enable the `html-hash` Cargo feature to use this converter as a fixture
 /// argument.  Each row must contain exactly two `<td>` cells; duplicate keys
@@ -201,7 +218,15 @@ impl SlimHash {
 
 /// Parses the V0.5 optional HTML hash representation into a deterministic
 /// Rust map. Missing or multiple tables produce an empty map, while rows that
-/// do not contain exactly two cells are ignored, matching FitNesse's converter.
+/// do not contain exactly two cells are ignored, matching `FitNesse`'s converter.
+///
+/// # Errors
+///
+/// This parser accepts any input and currently never returns an error.
+///
+/// # Panics
+///
+/// Panics only if one of the built-in CSS selectors fails to parse.
 #[cfg(feature = "html-hash")]
 pub fn parse_html_hash(input: &str) -> Result<SlimHash, ExecuteMethodError> {
     let document = Html::parse_fragment(input);
@@ -233,17 +258,18 @@ pub fn parse_html_hash(input: &str) -> Result<SlimHash, ExecuteMethodError> {
 #[cfg(feature = "html-hash")]
 impl IntoSlimValue for SlimHash {
     fn into_slim_value(self) -> Result<SlimValue, ExecuteMethodError> {
-        let rows = self
-            .0
-            .into_iter()
-            .map(|(key, value)| {
-                format!(
-                    "<tr><td>{}</td><td>{}</td></tr>",
-                    escape_html(&key),
-                    escape_html(&value)
-                )
-            })
-            .collect::<String>();
+        use std::fmt::Write as _;
+
+        let mut rows = String::new();
+        for (key, value) in self.0 {
+            write!(
+                rows,
+                "<tr><td>{}</td><td>{}</td></tr>",
+                escape_html(&key),
+                escape_html(&value)
+            )
+            .expect("writing to a String cannot fail");
+        }
         Ok(SlimValue::String(format!("<table>{rows}</table>")))
     }
 }
@@ -509,7 +535,7 @@ fn conversion_error(expected: &str, actual: &SlimValue) -> ExecuteMethodError {
 }
 
 /// Parses the documented Java-style textual list form (`[a, b, c]`) used by
-/// older SliM clients. Recursive wire lists remain the preferred lossless
+/// older `SliM` clients. Recursive wire lists remain the preferred lossless
 /// representation, while this compatibility parser also accepts nested
 /// bracketed lists such as `[a, [b, c]]`.
 fn parse_string_list(value: &str) -> Result<Vec<SlimValue>, ExecuteMethodError> {
@@ -535,7 +561,7 @@ fn parse_string_list(value: &str) -> Result<Vec<SlimValue>, ExecuteMethodError> 
             ']' => {
                 depth = depth.checked_sub(1).ok_or_else(|| {
                     ExecuteMethodError::ArgumentParsingError("unbalanced bracketed list".into())
-                })?
+                })?;
             }
             ',' if depth == 0 => {
                 values.push(parse_string_list_item(&contents[start..index])?);

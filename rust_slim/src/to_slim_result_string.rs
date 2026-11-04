@@ -5,6 +5,12 @@ use crate::ExecuteMethodError;
 /// New fixtures should implement [`crate::IntoSlimValue`] or use `#[fixture]`,
 /// which preserves lists, null, and void without sentinel strings.
 pub trait ToSlimResultString {
+    /// Converts the value to its `SliM` result string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecuteMethodError`] if the value cannot be converted or
+    /// represents a failed method.
     fn to_slim_result_string(self) -> Result<String, ExecuteMethodError>;
 }
 
@@ -94,7 +100,7 @@ fn iterator_to_slim_result_string(
     Ok(format!(
         "/__ARRAY[{}]__/",
         iterator
-            .map(|v| v.to_slim_result_string())
+            .map(ToSlimResultString::to_slim_result_string)
             .collect::<Result<Vec<String>, ExecuteMethodError>>()?
             .join("__|__")
     ))

@@ -63,7 +63,7 @@ impl App {
             return self.process_paths(get_list_of_files(&path)?);
         }
         if metadata.is_file() && self.is_correct_extension(&path) {
-            return self.process_file(&path, filter);
+            return self.process_file(&path, &filter);
         }
         Ok(false)
     }
@@ -90,8 +90,8 @@ impl App {
             .ends_with(&self.extension)
     }
 
-    fn process_file(&mut self, file: impl AsRef<Path>, filter: Filter) -> Result<bool> {
-        let (instructions, expected_result) = process_markdown_into_instructions(&file, &filter)?;
+    fn process_file(&mut self, file: impl AsRef<Path>, filter: &Filter) -> Result<bool> {
+        let (instructions, expected_result) = process_markdown_into_instructions(&file, filter)?;
         if instructions.is_empty() {
             println!("NONE");
             return Ok(false);
@@ -102,7 +102,7 @@ impl App {
         let fail = execute_instructions_and_print_result(
             &mut connection,
             &file.as_ref().to_string_lossy(),
-            instructions,
+            &instructions,
             expected_result,
             self.show_snoozed,
             &mut state,
@@ -115,6 +115,6 @@ impl App {
 
 pub fn get_list_of_files(dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
     Ok(read_dir(dir.as_ref())?
-        .map(|file| file.map(|file| file.path().to_path_buf()))
+        .map(|file| file.map(|file| file.path().clone()))
         .collect::<Result<Vec<PathBuf>, std::io::Error>>()?)
 }

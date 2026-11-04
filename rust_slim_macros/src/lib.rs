@@ -5,7 +5,7 @@ use syn::{
     ImplItem, ImplItemFn, ItemImpl, LitStr, PathArguments, Result, ReturnType, Type, Visibility,
 };
 
-/// Exposes public instance methods in an implementation block as SliM fixture
+/// Exposes public instance methods in an implementation block as `SliM` fixture
 /// methods. `#[slim(constructor)]` marks associated constructors and
 /// `#[slim(sut)]` marks the zero-argument System Under Test accessor.
 #[proc_macro_attribute]
@@ -70,14 +70,13 @@ fn extract_markers(items: &mut [ImplItem]) -> Result<(Vec<ImplItemFn>, Option<Im
                     "a fixture may declare only one `sut` method",
                 ));
             }
-            Some("sut") => {}
+            Some("sut") | None => {}
             Some(name) => {
                 return Err(Error::new_spanned(
                     method,
                     format!("unknown SliM fixture marker `{name}`"),
                 ));
             }
-            None => {}
         }
     }
     Ok((constructors, sut))

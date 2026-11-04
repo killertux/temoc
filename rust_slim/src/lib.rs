@@ -1,4 +1,4 @@
-//! A SliM V0.5 server implementation for acceptance testing.
+//! A `SliM` V0.5 server implementation for acceptance testing.
 //!
 //! This was implementating using the documentation found [here](http://fitnesse.org/FitNesse.UserGuide.WritingAcceptanceTests.SliM.SlimProtocol)
 //!
@@ -97,6 +97,11 @@ mod value;
 pub trait SlimFixture {
     /// Execute a method if it exists in the current fixture.
     /// The `method`is the method name that should be executed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecuteMethodError`] if the method does not exist, its
+    /// arguments cannot be converted, or the method itself fails.
     fn execute_method(
         &mut self,
         method: &str,
@@ -106,6 +111,12 @@ pub trait SlimFixture {
     /// Tries the fixture's System Under Test after a method is not found on
     /// the fixture itself.  Fixtures without an SUT keep the default, which
     /// deliberately looks like a missing method to the dispatcher.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecuteMethodError::MethodNotFound`] when there is no System
+    /// Under Test or it has no such method, and any other
+    /// [`ExecuteMethodError`] if the method fails.
     fn execute_system_under_test(
         &mut self,
         method: &str,
@@ -118,7 +129,7 @@ pub trait SlimFixture {
     }
 }
 
-/// ClassPath that will be used in the construction of the fixture.
+/// `ClassPath` that will be used in the construction of the fixture.
 /// It must be pascal case and have its parts separated by a `.`. Eg: `Fixtures.Calculator`
 /// The `#[fixture]` macro will automatically implement it for the type in the impl block.
 /// By default, the macro will get the current module path and add the fixutre type. For example, a fixutre with the type `Calculator` inside the module `examples::calculator::fixtures` will be converted to a path like `Examples.Calculator.Fixtures.Calculator`.
@@ -135,12 +146,18 @@ pub trait ClassPath {
     fn class_path() -> String;
 }
 
-/// Trait used to construct a fixture from SliM constructor arguments.
+/// Trait used to construct a fixture from `SliM` constructor arguments.
 ///
 /// Implementations must report an arity mismatch as [`ConstructorError::NoConstructor`],
 /// conversion failures as [`ConstructorError::ArgumentParsingError`], and an
 /// error from the constructor itself as [`ConstructorError::CouldNotInvoke`].
 pub trait Constructor {
+    /// Builds the fixture from its constructor arguments.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConstructorError`] if no constructor accepts this number of
+    /// arguments, an argument cannot be converted, or the constructor fails.
     fn construct(args: Vec<SlimValue>) -> Result<Self, ConstructorError>
     where
         Self: Sized;
@@ -156,7 +173,7 @@ pub enum ConstructorError {
     Control(SlimControlException),
 }
 
-/// A structured request from a fixture to change SliM batch execution.
+/// A structured request from a fixture to change `SliM` batch execution.
 ///
 /// The reference implementation recognizes exception class names such as
 /// `StopTest`. Rust fixtures express the same request by returning this value
@@ -187,7 +204,7 @@ impl SlimControl {
     }
 }
 
-/// Details for a fixture-requested SliM batch control result.
+/// Details for a fixture-requested `SliM` batch control result.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct SlimControlException {
     pub control: SlimControl,
@@ -214,13 +231,13 @@ impl SlimControlException {
 /// Error that can happen while trying to execute a method in a feature.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum ExecuteMethodError {
-    /// The method might not exists, which should cause a MethodNotFound error.
+    /// The method might not exists, which should cause a `MethodNotFound` error.
     MethodNotFound { method: String, class: String },
     /// A fixture argument could not be converted through [`FromSlimValue`].
     ArgumentParsingError(String),
-    /// And there might be some failure in the method itself, which should cause an ExecutionError.
+    /// And there might be some failure in the method itself, which should cause an `ExecutionError`.
     ExecutionError(String),
-    /// A fixture asks the SliM runtime to stop or ignore the current work.
+    /// A fixture asks the `SliM` runtime to stop or ignore the current work.
     Control(SlimControlException),
 }
 
