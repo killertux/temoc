@@ -17,7 +17,7 @@ convert_case = "0.6"
 markdown = "1.0.0-alpha.15"
 toml = "0.8"
 ulid = "1"
-slim_protocol = { version = "0.3.0", path = "../slim_protocol" }
+slim_protocol = { version = "0.3.1", path = "../slim_protocol" }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -26,4 +26,4 @@ libc = "0.2"
 rand = "0.8"
 
 [dev-dependencies]
-rust_slim = { version = "0.3.0", path = "../rust_slim/", features = ["macros"] }
+rust_slim = { version = "0.3.1", path = "../rust_slim/", features = ["macros"] }
