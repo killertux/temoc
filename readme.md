@@ -25,6 +25,20 @@ You will use one of these plugins to write the test fixtures in your project. Fi
 
 After this is done, you can write your accepatance tests markdown. Take a look at our calculator example [Here](https://github.com/killertux/temoc/tree/master/temoc/examples). See the raw markdown files because there are hidden instructions. To run it, you can run `cargo run -- -c Config.toml.example`.
 
+## Installing Temoc
+
+On Linux and macOS (x86_64 or aarch64), you can install the latest release with:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/killertux/temoc/master/install.sh | sh
+```
+
+This downloads the right binary for your system from [GitHub Releases](https://github.com/killertux/temoc/releases) and installs it to `~/.local/bin`. Set `TEMOC_INSTALL_DIR` to install it somewhere else, or `TEMOC_VERSION` to pin a release:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/killertux/temoc/master/install.sh | TEMOC_VERSION=0.9.6 TEMOC_INSTALL_DIR=/usr/local/bin sh
+```
+
 ## Building Temoc
 
 Temoc is written in rust, you can install the rust toolchain [here](https://rustup.rs/). After that, you can compile everything using `cargo build --release`. This should create a compiled binary in `./target/release/temoc`.
