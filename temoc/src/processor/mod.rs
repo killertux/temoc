@@ -89,7 +89,7 @@ pub fn process_markdown_into_instructions(
 ) -> Result<(Vec<Instruction>, Vec<ExpectedResulWithSnooze>)> {
     let file_path = file_path.as_ref();
     let file_path_display = file_path.display().to_string();
-    print!("Testing file {}...", file_path_display);
+    print!("Testing file {file_path_display}...");
     let markdown = parse_markdown(file_path)?;
     let commands = filter.apply(get_commands_from_markdown(markdown, file_path_display)?);
     if !commands
@@ -98,20 +98,20 @@ pub fn process_markdown_into_instructions(
     {
         return Ok((vec![], vec![]));
     }
-    get_instructions_from_commands(commands)
+    Ok(get_instructions_from_commands(commands))
 }
 
 pub fn execute_instructions_and_print_result<R: Read, W: Write>(
     connection: &mut SlimConnection<R, W>,
     file_path: &str,
-    instructions: Vec<Instruction>,
+    instructions: &[Instruction],
     expected_result: Vec<ExpectedResulWithSnooze>,
     show_snoozed: bool,
     state: &mut State,
 ) -> Result<bool> {
-    let result = connection.send_instructions(&instructions)?;
+    let result = connection.send_instructions(instructions)?;
     let failures = validate_result(file_path, expected_result, result, state)?;
-    print_fail_or_ok(show_snoozed, failures)
+    Ok(print_fail_or_ok(show_snoozed, failures))
 }
 
 fn parse_markdown(file_path: &Path) -> Result<Node> {
@@ -119,7 +119,7 @@ fn parse_markdown(file_path: &Path) -> Result<Node> {
         .map_err(|err| anyhow!("Error parsing markdown {err}"))
 }
 
-fn print_fail_or_ok(show_snoozed: bool, failures: Vec<(String, Snooze)>) -> Result<bool> {
+fn print_fail_or_ok(show_snoozed: bool, failures: Vec<(String, Snooze)>) -> bool {
     if !failures.is_empty() {
         if failures.iter().any(|(_, snoose)| snoose.should_snooze()) {
             println!("SNOOZED");
@@ -127,10 +127,10 @@ fn print_fail_or_ok(show_snoozed: bool, failures: Vec<(String, Snooze)>) -> Resu
             println!("FAIL");
         }
         let mut fail = false;
-        for (failure, snooze) in failures.into_iter() {
+        for (failure, snooze) in failures {
             let should_snooze = snooze.should_snooze();
             if should_snooze && show_snoozed {
-                let snooze_string = format!(" -- snoozed until {}", snooze);
+                let snooze_string = format!(" -- snoozed until {snooze}");
                 println!(
                     "{failure}{}",
                     if should_snooze { &snooze_string } else { "" }
@@ -141,10 +141,10 @@ fn print_fail_or_ok(show_snoozed: bool, failures: Vec<(String, Snooze)>) -> Resu
 
             fail |= !should_snooze;
         }
-        return Ok(fail);
+        return fail;
     }
     println!("OK");
-    Ok(false)
+    false
 }
 
 #[cfg(test)]
@@ -236,7 +236,7 @@ mod test {
     }
 
     #[test]
-    fn test_filter_line() -> Result<()> {
+    fn test_filter_line() {
         let filter = Filter::new().line(10);
         let commands = vec![
             MarkdownCommand::DecisionTable {
@@ -272,6 +272,5 @@ mod test {
             ],
             filtered
         );
-        Ok(())
     }
 }

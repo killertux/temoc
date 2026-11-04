@@ -1,6 +1,6 @@
 use convert_case::{Case, Casing};
 
-/// Util function that convert a rust module path to the ClassPath used in Fitnesse.
+/// Util function that convert a rust module path to the `ClassPath` used in Fitnesse.
 pub fn from_rust_module_path_to_class_path(rust_module_path: &str) -> String {
     join(
         rust_module_path
@@ -18,7 +18,7 @@ fn join<T: AsRef<str>>(iterator: impl Iterator<Item = T>, separator: &str) -> St
             result += separator;
         }
         result += part.as_ref();
-        first = false
+        first = false;
     }
     result
 }

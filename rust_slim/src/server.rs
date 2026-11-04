@@ -53,12 +53,21 @@ impl SlimServerOptions {
         self.instruction_timeout
     }
 
-    /// Parses the documented `-s <seconds>` SliM flag. Other arguments are
+    /// Parses the documented `-s <seconds>` `SliM` flag. Other arguments are
     /// ignored so the same slice can include the command-line port.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SlimServerOptionsError`] if the `-s` flag is malformed.
     pub fn from_slim_flags(flags: &str) -> Result<Self, SlimServerOptionsError> {
         Self::from_args(flags.split_whitespace())
     }
 
+    /// Parses the `-s <seconds>` `SliM` flag from already split arguments.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SlimServerOptionsError`] if the `-s` flag is malformed.
     pub fn from_args<I, S>(args: I) -> Result<Self, SlimServerOptionsError>
     where
         I: IntoIterator<Item = S>,
@@ -112,7 +121,7 @@ pub enum SlimServerOptionsError {
     InvalidPort(String),
 }
 
-/// The mutable execution context required by the SliM instruction set.
+/// The mutable execution context required by the `SliM` instruction set.
 pub struct SlimServer<R: Read, W: Write> {
     fixtures: HashMap<String, SlimClosureConstructor>,
     instances: HashMap<String, SlimValue>,
@@ -154,6 +163,12 @@ impl<R: Read, W: Write> SlimServer<R, W> {
         );
     }
 
+    /// Serves instructions until the client says bye.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SlimServerError`] if reading from or writing to the client
+    /// fails, or if the client sends an invalid message.
     pub fn run(mut self) -> Result<(), SlimServerError> {
         self.writer.write_all(b"Slim -- V0.5\n")?;
         self.writer.flush()?;
@@ -214,13 +229,13 @@ impl<R: Read, W: Write> SlimServer<R, W> {
                 instance,
                 class,
                 args,
-            } => self.make(id, instance, class, args),
+            } => self.make(id, instance, &class, args),
             Instruction::Call {
                 id,
                 instance,
                 function,
                 args,
-            } => self.call(id, None, instance, function, args),
+            } => self.call(id, None, &instance, function, args),
             Instruction::CallAndAssign {
                 id,
                 symbol,
@@ -237,9 +252,9 @@ impl<R: Read, W: Write> SlimServer<R, W> {
                         function,
                     ];
                     fields.extend(args.iter().map(wire_value_text));
-                    return malformed_instruction(id, fields);
+                    return malformed_instruction(id, &fields);
                 }
-                self.call(id, Some(symbol), instance, function, args)
+                self.call(id, Some(symbol), &instance, function, args)
             }
             Instruction::Assign { id, symbol, value } => {
                 if !is_symbol_name(&symbol) {
@@ -249,7 +264,7 @@ impl<R: Read, W: Write> SlimServer<R, W> {
                         symbol,
                         wire_value_text(&value),
                     ];
-                    return malformed_instruction(id, fields);
+                    return malformed_instruction(id, &fields);
                 }
                 self.symbols
                     .insert(symbol, runtime_value_without_symbols(value));
@@ -262,16 +277,16 @@ impl<R: Read, W: Write> SlimServer<R, W> {
         &mut self,
         id: Id,
         instance: String,
-        class: String,
+        class: &str,
         args: Vec<WireSlimValue>,
     ) -> InstructionResult {
-        if let Some(value) = self.whole_symbol(&class) {
+        if let Some(value) = self.whole_symbol(class) {
             if !matches!(value, SlimValue::String(_)) {
                 self.insert_instance(instance, value);
                 return InstructionResult::ok(id);
             }
         }
-        let class = self.replace_symbols(&class);
+        let class = self.replace_symbols(class);
         let Some(constructor) = self.find_fixture(&class) else {
             return exception(id, format!("NO_CLASS {class}"));
         };
@@ -306,14 +321,14 @@ impl<R: Read, W: Write> SlimServer<R, W> {
         &mut self,
         id: Id,
         assigned_symbol: Option<String>,
-        instance: String,
+        instance: &str,
         function: String,
         args: Vec<WireSlimValue>,
     ) -> InstructionResult {
         let protocol_function = function;
         let function = protocol_function.to_case(Case::Snake);
         let args = self.parse_wire_values(args);
-        let result = self.dispatch(&instance, &function, args);
+        let result = self.dispatch(instance, &function, args);
         match result {
             Ok(value) => {
                 if let Some(symbol) = assigned_symbol {
@@ -483,12 +498,11 @@ impl<R: Read, W: Write> SlimServer<R, W> {
                 result.push('$');
             } else {
                 let name = &value[start..end];
-                match self.symbols.get(name) {
-                    Some(symbol) => result.push_str(&symbol.as_text()),
-                    None => {
-                        result.push('$');
-                        result.push_str(name);
-                    }
+                if let Some(symbol) = self.symbols.get(name) {
+                    result.push_str(&symbol.as_text());
+                } else {
+                    result.push('$');
+                    result.push_str(name);
                 }
             }
         }
@@ -496,12 +510,17 @@ impl<R: Read, W: Write> SlimServer<R, W> {
     }
 }
 
-/// A server whose transport is selected from the SliM command-line port.
+/// A server whose transport is selected from the `SliM` command-line port.
 pub type PortSlimServer = SlimServer<Box<dyn Read + Send>, Box<dyn Write + Send>>;
 
 impl SlimServer<Box<dyn Read + Send>, Box<dyn Write + Send>> {
-    /// Parses FitNesse's `[-s seconds] port` arguments and opens the selected
+    /// Parses `FitNesse`'s `[-s seconds] port` arguments and opens the selected
     /// transport. Pass `std::env::args().skip(1)` from a server binary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SlimServerError`] if the port is missing or invalid, the
+    /// flags are malformed, or the transport cannot be opened.
     pub fn listen_from_args<I, S>(args: I) -> Result<Self, SlimServerError>
     where
         I: IntoIterator<Item = S>,
@@ -519,11 +538,16 @@ impl SlimServer<Box<dyn Read + Send>, Box<dyn Write + Send>> {
         Self::listen_on_port(port, options)
     }
 
-    /// Creates a V0.5 server transport for the supplied SliM port.
+    /// Creates a V0.5 server transport for the supplied `SliM` port.
     ///
     /// Port `1` uses the current process stdin/stdout. Any other port binds a
-    /// TCP listener, accepts one FitNesse connection, then returns a server
+    /// TCP listener, accepts one `FitNesse` connection, then returns a server
     /// ready for fixture registration and [`SlimServer::run`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SlimServerError`] if binding the port or accepting the
+    /// connection fails.
     pub fn listen_on_port(port: u16, options: SlimServerOptions) -> Result<Self, SlimServerError> {
         if port == 1 {
             return Ok(Self::with_options(
@@ -544,7 +568,7 @@ impl SlimServer<Box<dyn Read + Send>, Box<dyn Write + Send>> {
 
 /// A line-oriented output tunnel for fixtures running in stdio mode.
 ///
-/// SliM reserves stdout for protocol frames when port `1` is used. Stable
+/// `SliM` reserves stdout for protocol frames when port `1` is used. Stable
 /// Rust cannot safely redirect arbitrary process-wide stdout/stderr without
 /// platform-specific file-descriptor manipulation, so fixtures that produce
 /// output should write to this explicit adapter, targeting stderr. It emits
@@ -665,7 +689,7 @@ fn exception(id: Id, value: String) -> InstructionResult {
     InstructionResult::exception(id, ExceptionMessage::new(value))
 }
 
-/// FitNesse recognizes standard SliM failures as displayable exception
+/// `FitNesse` recognizes standard `SliM` failures as displayable exception
 /// messages only when they are carried inside `message:<<...>>`.  Batch
 /// control tags deliberately bypass this helper because their raw prefix is
 /// part of the control protocol.
@@ -719,7 +743,7 @@ fn control_from_result(result: &InstructionResult) -> Option<SlimControl> {
     .find_map(|(tag, control)| message.starts_with(tag).then_some(control))
 }
 
-fn malformed_instruction(id: Id, fields: Vec<String>) -> InstructionResult {
+fn malformed_instruction(id: Id, fields: &[String]) -> InstructionResult {
     exception(id, format!("MALFORMED_INSTRUCTION [{}]", fields.join(",")))
 }
 
@@ -1570,7 +1594,7 @@ mod tests {
             )],
             result
         );
-        assert!(server.imports.is_empty());
+        assert_eq!(server.imports, [] as [std::string::String; 0]);
         assert_eq!(
             InstructionResult::exception(
                 "plain".into(),

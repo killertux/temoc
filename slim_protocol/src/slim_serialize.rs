@@ -1,8 +1,8 @@
 use crate::{Instruction, InstructionResult, InstructionResultValue, SlimValue};
 
-/// A complete SliM message. Its leading length is measured in UTF-8 bytes.
+/// A complete `SliM` message. Its leading length is measured in UTF-8 bytes.
 ///
-/// SliM uses a different unit for strings embedded in lists: UTF-16 code units.
+/// `SliM` uses a different unit for strings embedded in lists: UTF-16 code units.
 /// Keeping the payload alongside the wire form makes that distinction explicit.
 #[derive(PartialEq, Eq, Debug)]
 pub struct SlimString {

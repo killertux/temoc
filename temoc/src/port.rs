@@ -9,8 +9,8 @@ pub struct CyclePort {
 
 impl CyclePort {
     pub fn new(port: u16, base_port: u16, pool_size: u16) -> Self {
-        let available = u32::from(u16::MAX) - u32::from(base_port) + 1;
-        let pool_size = u32::from(pool_size.max(1)).min(available) as u16;
+        let available = (u16::MAX - base_port).saturating_add(1);
+        let pool_size = pool_size.max(1).min(available);
         Self {
             port,
             base_port,

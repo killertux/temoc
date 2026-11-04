@@ -78,44 +78,44 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn config_u16(config_file: &Table, key: &str) -> Result<Option<u16>> {
+    config_file
+        .get(key)
+        .map(|value| {
+            let value = value
+                .as_integer()
+                .ok_or_else(|| anyhow!("Expected `{key}` to be a number"))?;
+            u16::try_from(value)
+                .map_err(|_| anyhow!("Expected `{key}` to be between 0 and 65535 but got {value}"))
+        })
+        .transpose()
+}
+
 fn append_config_to_args(mut args: Args) -> Result<Args> {
     match &args.configuration_file {
         None => Ok(args),
         Some(configuration_file) => {
             let config_file = read_to_string(configuration_file)?.parse::<Table>()?;
-            args.port = args.port.or(config_file
-                .get("port")
-                .map(|port| port.as_integer().expect("Expect the port to be a number") as u16));
-            args.pool_size = args.pool_size.or(config_file
-                .get("pool_size")
-                .map(|port| port.as_integer().expect("Expect the port to be a number") as u16));
+            args.port = args.port.or(config_u16(&config_file, "port")?);
+            args.pool_size = args.pool_size.or(config_u16(&config_file, "pool_size")?);
             args.recursive = args.recursive
-                || config_file
-                    .get("recursive")
-                    .map(|recursive| {
-                        recursive
-                            .as_bool()
-                            .expect("Expect the recursive to be a boolean")
-                    })
-                    .unwrap_or_default();
+                || config_file.get("recursive").is_some_and(|recursive| {
+                    recursive
+                        .as_bool()
+                        .expect("Expect the recursive to be a boolean")
+                });
             args.show_snoozed = args.show_snoozed
-                || config_file
-                    .get("show_snoozed")
-                    .map(|show_snoozed| {
-                        show_snoozed
-                            .as_bool()
-                            .expect("Expect the show_snoozed to be a boolean")
-                    })
-                    .unwrap_or_default();
+                || config_file.get("show_snoozed").is_some_and(|show_snoozed| {
+                    show_snoozed
+                        .as_bool()
+                        .expect("Expect the show_snoozed to be a boolean")
+                });
             args.pipe_output = args.pipe_output
-                || config_file
-                    .get("pipe_output")
-                    .map(|verbose| {
-                        verbose
-                            .as_bool()
-                            .expect("Expect the verbose to be a boolean")
-                    })
-                    .unwrap_or_default();
+                || config_file.get("pipe_output").is_some_and(|verbose| {
+                    verbose
+                        .as_bool()
+                        .expect("Expect the verbose to be a boolean")
+                });
             args.execute_server_command = args.execute_server_command.or(config_file
                 .get("execute_server_command")
                 .map(|command| {
@@ -132,9 +132,7 @@ fn append_config_to_args(mut args: Args) -> Result<Args> {
                         .expect("Expect the slim server command to be a string")
                         .to_string()
                 }));
-            args.files = if !args.files.is_empty() {
-                args.files
-            } else {
+            args.files = if args.files.is_empty() {
                 let test_dir = config_file
                     .get("test_dir")
                     .map(|test_dir| {
@@ -144,8 +142,44 @@ fn append_config_to_args(mut args: Args) -> Result<Args> {
                     })
                     .ok_or(anyhow!("You need to specify a test file or a test dir"))?;
                 get_list_of_files(test_dir)?
+            } else {
+                args.files
             };
             Ok(args)
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    fn config(toml: &str) -> Table {
+        toml.parse().unwrap()
+    }
+
+    #[test]
+    fn config_u16_reads_valid_values() {
+        let config = config("port = 8085");
+        assert_eq!(Some(8085), config_u16(&config, "port").unwrap());
+        assert_eq!(None, config_u16(&config, "pool_size").unwrap());
+    }
+
+    #[test]
+    fn config_u16_rejects_out_of_range_values() {
+        for value in ["70000", "65537", "-1"] {
+            let config = config(&format!("port = {value}"));
+            let error = config_u16(&config, "port").unwrap_err();
+            assert_eq!(
+                format!("Expected `port` to be between 0 and 65535 but got {value}"),
+                error.to_string()
+            );
+        }
+    }
+
+    #[test]
+    fn config_u16_rejects_values_that_are_not_numbers() {
+        let error = config_u16(&config("pool_size = \"ten\""), "pool_size").unwrap_err();
+        assert_eq!("Expected `pool_size` to be a number", error.to_string());
     }
 }
