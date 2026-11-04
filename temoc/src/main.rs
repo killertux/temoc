@@ -1,15 +1,26 @@
 use crate::app::{get_list_of_files, App};
+use crate::jsonl::JsonlOptions;
 use crate::processor::Filter;
 use crate::slim_server_connector::build_slim_server_connector;
 use anyhow::{anyhow, bail, Result};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::{fs::read_to_string, path::PathBuf};
 use toml::Table;
 
 mod app;
+mod cancel;
+mod captured_server;
+mod events;
+mod jsonl;
 mod port;
 mod processor;
 mod slim_server_connector;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum OutputFormat {
+    Text,
+    Jsonl,
+}
 
 /// Test markdown files using a slim server
 #[derive(Parser, Debug)]
@@ -42,12 +53,56 @@ struct Args {
     /// Filter the decision tables by the fixture class. Accept any regex string
     #[arg(short = 'f', long)]
     class_filter: Option<String>,
-    /// List of files to test
+    /// How to report results. `jsonl` prints one JSON object per line as the tests run. Default is text
+    #[arg(long, value_enum)]
+    output: Option<OutputFormat>,
+    /// List of files to test. Append `:LINE` to select a decision table or a row
     files: Vec<PathBuf>,
 }
 
 fn main() -> Result<()> {
-    let args = append_config_to_args(Args::parse())?;
+    let args = Args::parse();
+    if output_format(&args) == OutputFormat::Jsonl {
+        std::process::exit(jsonl::run(jsonl_options(args)));
+    }
+    run_text(args)
+}
+
+/// Decides the format before the rest of the configuration is read, because
+/// problems with it have to be reported in that format.
+fn output_format(args: &Args) -> OutputFormat {
+    args.output
+        .or_else(|| {
+            let configuration_file = args.configuration_file.as_ref()?;
+            let config_file = read_to_string(configuration_file).ok()?;
+            config_output(&config_file.parse().ok()?).ok()?
+        })
+        .unwrap_or(OutputFormat::Text)
+}
+
+fn jsonl_options(args: Args) -> Result<JsonlOptions> {
+    let args = append_config_to_args(args)?;
+    let Some(command) = args.execute_server_command else {
+        bail!("You need to provide a command to start the slim server")
+    };
+    let mut filter = Filter::new();
+    if let Some(fixture) = args.class_filter {
+        filter = filter.fixture_class(&fixture)?;
+    }
+    Ok(JsonlOptions {
+        command,
+        port: args.port.unwrap_or(8085),
+        pool_size: args.pool_size.unwrap_or(20),
+        pipe_output: args.pipe_output,
+        recursive: args.recursive,
+        extension: args.extension.unwrap_or("md".to_string()).to_lowercase(),
+        filter,
+        paths: args.files,
+    })
+}
+
+fn run_text(args: Args) -> Result<()> {
+    let args = append_config_to_args(args)?;
     let Some(command) = args.execute_server_command else {
         bail!("You need to provide a command to start the slim server")
     };
@@ -91,6 +146,34 @@ fn config_u16(config_file: &Table, key: &str) -> Result<Option<u16>> {
         .transpose()
 }
 
+fn config_bool(config_file: &Table, key: &str, message: &str) -> Result<bool> {
+    config_file.get(key).map_or(Ok(false), |value| {
+        value.as_bool().ok_or_else(|| anyhow!("{message}"))
+    })
+}
+
+fn config_str(config_file: &Table, key: &str, message: &str) -> Result<Option<String>> {
+    config_file
+        .get(key)
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| anyhow!("{message}"))
+        })
+        .transpose()
+}
+
+fn config_output(config_file: &Table) -> Result<Option<OutputFormat>> {
+    config_str(config_file, "output", "Expected `output` to be a string")?
+        .map(|output| {
+            OutputFormat::from_str(&output, false).map_err(|_| {
+                anyhow!("Expected `output` to be `text` or `jsonl` but got `{output}`")
+            })
+        })
+        .transpose()
+}
+
 fn append_config_to_args(mut args: Args) -> Result<Args> {
     match &args.configuration_file {
         None => Ok(args),
@@ -98,53 +181,48 @@ fn append_config_to_args(mut args: Args) -> Result<Args> {
             let config_file = read_to_string(configuration_file)?.parse::<Table>()?;
             args.port = args.port.or(config_u16(&config_file, "port")?);
             args.pool_size = args.pool_size.or(config_u16(&config_file, "pool_size")?);
+            args.output = args.output.or(config_output(&config_file)?);
             args.recursive = args.recursive
-                || config_file.get("recursive").is_some_and(|recursive| {
-                    recursive
-                        .as_bool()
-                        .expect("Expect the recursive to be a boolean")
-                });
+                || config_bool(
+                    &config_file,
+                    "recursive",
+                    "Expect the recursive to be a boolean",
+                )?;
             args.show_snoozed = args.show_snoozed
-                || config_file.get("show_snoozed").is_some_and(|show_snoozed| {
-                    show_snoozed
-                        .as_bool()
-                        .expect("Expect the show_snoozed to be a boolean")
-                });
+                || config_bool(
+                    &config_file,
+                    "show_snoozed",
+                    "Expect the show_snoozed to be a boolean",
+                )?;
             args.pipe_output = args.pipe_output
-                || config_file.get("pipe_output").is_some_and(|verbose| {
-                    verbose
-                        .as_bool()
-                        .expect("Expect the verbose to be a boolean")
-                });
-            args.execute_server_command = args.execute_server_command.or(config_file
-                .get("execute_server_command")
-                .map(|command| {
-                    command
-                        .as_str()
-                        .expect("Expect the slim server command to be a string")
-                        .to_string()
-                }));
-            args.extension = args
-                .extension
-                .or(config_file.get("extension").map(|command| {
-                    command
-                        .as_str()
-                        .expect("Expect the slim server command to be a string")
-                        .to_string()
-                }));
-            args.files = if args.files.is_empty() {
-                let test_dir = config_file
-                    .get("test_dir")
-                    .map(|test_dir| {
-                        test_dir
-                            .as_str()
-                            .expect("Expect the test dir to be a string")
-                    })
-                    .ok_or(anyhow!("You need to specify a test file or a test dir"))?;
-                get_list_of_files(test_dir)?
-            } else {
-                args.files
-            };
+                || config_bool(
+                    &config_file,
+                    "pipe_output",
+                    "Expect the verbose to be a boolean",
+                )?;
+            if args.execute_server_command.is_none() {
+                args.execute_server_command = config_str(
+                    &config_file,
+                    "execute_server_command",
+                    "Expect the slim server command to be a string",
+                )?;
+            }
+            if args.extension.is_none() {
+                args.extension = config_str(
+                    &config_file,
+                    "extension",
+                    "Expect the slim server command to be a string",
+                )?;
+            }
+            if args.files.is_empty() {
+                let test_dir = config_str(
+                    &config_file,
+                    "test_dir",
+                    "Expect the test dir to be a string",
+                )?
+                .ok_or(anyhow!("You need to specify a test file or a test dir"))?;
+                args.files = get_list_of_files(test_dir)?;
+            }
             Ok(args)
         }
     }

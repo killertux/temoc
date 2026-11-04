@@ -22,10 +22,69 @@ pub fn get_instructions_from_commands(
                 r#type,
                 table,
                 snoozed,
+                ..
             } => plan.decision_table(class, &r#type, table, &snoozed),
         }
     }
     (plan.instructions, plan.expected_result)
+}
+
+/// Instructions sent to the server together, with what each should return.
+#[derive(Default)]
+pub struct Batch {
+    pub instructions: Vec<Instruction>,
+    pub expected_result: Vec<ExpectedResulWithSnooze>,
+}
+
+/// One text cell of a `#method` table row, compared against one list element.
+pub struct MethodCell {
+    pub column: usize,
+    pub expected: String,
+}
+
+pub struct RowPlan {
+    pub line: usize,
+    pub batch: Batch,
+    pub method_cells: Vec<MethodCell>,
+}
+
+pub struct TablePlan {
+    pub line: usize,
+    pub class: String,
+    pub columns: Vec<String>,
+    pub snoozed: Snooze,
+    /// Pending imports, `Make` and `beginTable`.
+    pub setup: Batch,
+    pub rows: Vec<RowPlan>,
+    pub teardown: Batch,
+}
+
+pub struct FilePlan {
+    pub tables: Vec<TablePlan>,
+    /// Imports that come after the last table.
+    pub trailing: Batch,
+}
+
+/// Splits the commands of a file into batches that are sent one at a time.
+pub fn get_file_plan(commands: Vec<MarkdownCommand>) -> FilePlan {
+    let mut plan = InstructionPlan::default();
+    let mut tables = Vec::new();
+    for command in commands {
+        match command {
+            MarkdownCommand::Import { path, position } => plan.import(path, position),
+            MarkdownCommand::DecisionTable {
+                class,
+                r#type,
+                table,
+                columns,
+                snoozed,
+            } => tables.push(plan.table_plan(class, &r#type, table, columns, snoozed)),
+        }
+    }
+    FilePlan {
+        tables,
+        trailing: plan.take_batch(),
+    }
 }
 
 #[derive(Default)]
@@ -52,6 +111,67 @@ impl InstructionPlan {
         table: Vec<TableRow>,
         snoozed: &Snooze,
     ) {
+        let instance = self.open_table(test_class, position.clone(), snoozed);
+        for row in table {
+            self.table_row(&instance, r#type, row, snoozed);
+        }
+        self.optional_call(&instance, "endTable", position, snoozed);
+    }
+
+    fn table_plan(
+        &mut self,
+        Class(test_class, position): Class,
+        r#type: &DecisionTableType,
+        table: Vec<TableRow>,
+        columns: Vec<String>,
+        snoozed: Snooze,
+    ) -> TablePlan {
+        let class = test_class.clone();
+        let instance = self.open_table(test_class, position.clone(), &snoozed);
+        let setup = self.take_batch();
+        let rows = table
+            .into_iter()
+            .map(|row| {
+                let line = row.position.line();
+                let method_cells = match r#type {
+                    DecisionTableType::MultipleSetterAndGetters => Vec::new(),
+                    DecisionTableType::SingleMethod(_) => row
+                        .getters
+                        .iter()
+                        .map(|(_, Value(expected, position))| MethodCell {
+                            column: position.column(),
+                            expected: expected.clone(),
+                        })
+                        .collect(),
+                };
+                self.table_row(&instance, r#type, row, &snoozed);
+                RowPlan {
+                    line,
+                    batch: self.take_batch(),
+                    method_cells,
+                }
+            })
+            .collect();
+        self.optional_call(&instance, "endTable", position.clone(), &snoozed);
+        TablePlan {
+            line: position.line(),
+            class,
+            columns,
+            snoozed,
+            setup,
+            rows,
+            teardown: self.take_batch(),
+        }
+    }
+
+    fn take_batch(&mut self) -> Batch {
+        Batch {
+            instructions: std::mem::take(&mut self.instructions),
+            expected_result: std::mem::take(&mut self.expected_result),
+        }
+    }
+
+    fn open_table(&mut self, test_class: String, position: Position, snoozed: &Snooze) -> String {
         let instance = Ulid::new().to_string();
         let id = Id::new();
         self.instructions.push(Instruction::Make {
@@ -62,19 +182,26 @@ impl InstructionPlan {
         });
         self.expected_result
             .push((ExpectedResult::ok(id, position.clone()), snoozed.clone()));
-        self.optional_call(&instance, "beginTable", position.clone(), snoozed);
-        for row in table {
-            self.optional_call(&instance, "reset", row.position.clone(), snoozed);
-            match r#type {
-                DecisionTableType::MultipleSetterAndGetters => {
-                    self.setters_and_getters(&instance, row, snoozed);
-                }
-                DecisionTableType::SingleMethod(method_name) => {
-                    self.single_method(&instance, method_name, row, snoozed);
-                }
+        self.optional_call(&instance, "beginTable", position, snoozed);
+        instance
+    }
+
+    fn table_row(
+        &mut self,
+        instance: &str,
+        r#type: &DecisionTableType,
+        row: TableRow,
+        snoozed: &Snooze,
+    ) {
+        self.optional_call(instance, "reset", row.position.clone(), snoozed);
+        match r#type {
+            DecisionTableType::MultipleSetterAndGetters => {
+                self.setters_and_getters(instance, row, snoozed);
+            }
+            DecisionTableType::SingleMethod(method_name) => {
+                self.single_method(instance, method_name, row, snoozed);
             }
         }
-        self.optional_call(&instance, "endTable", position, snoozed);
     }
 
     fn setters_and_getters(&mut self, instance: &str, row: TableRow, snoozed: &Snooze) {
@@ -398,6 +525,7 @@ mod test {
                         ],
                     },
                 ],
+                columns: vec![],
                 snoozed: Snooze::not_snooze(),
             }]);
         assert_eq!(15, instructions.len());
@@ -690,6 +818,7 @@ mod test {
                         Value("1".into(), position.clone()),
                     )],
                 }],
+                columns: vec![],
                 snoozed: Snooze::snooze(NaiveDate::from_ymd_opt(2099, 12, 31).unwrap()),
             }]);
         assert_eq!(7, instructions.len());
@@ -852,6 +981,7 @@ mod test {
                         ],
                     },
                 ],
+                columns: vec![],
                 snoozed: Snooze::not_snooze(),
             }]);
         assert_eq!(7, instructions.len());
@@ -1016,6 +1146,7 @@ mod test {
                         )],
                     },
                 ],
+                columns: vec![],
                 snoozed: Snooze::not_snooze(),
             }]);
         assert_eq!(9, instructions.len());
