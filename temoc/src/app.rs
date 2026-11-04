@@ -50,44 +50,19 @@ impl App {
     }
 
     pub fn process_path(&mut self, path: impl AsRef<Path>) -> Result<bool> {
-        let mut path = path.as_ref().to_path_buf();
+        let (path, line) = split_selector(path.as_ref());
         let mut filter = self.filter.clone();
-        if let Ok(line) = Self::get_line_from_path(&path) {
-            if let Some(remaining) = path.to_string_lossy().strip_suffix(&format!(":{line}")) {
-                path = PathBuf::from(remaining);
-                filter = filter.line(line);
-            }
+        if let Some(line) = line {
+            filter = filter.line(line);
         }
         let metadata = metadata(&path)?;
         if metadata.is_dir() && self.recursive {
             return self.process_paths(get_list_of_files(&path)?);
         }
-        if metadata.is_file() && self.is_correct_extension(&path) {
+        if metadata.is_file() && has_extension(&path, &self.extension) {
             return self.process_file(&path, &filter);
         }
         Ok(false)
-    }
-
-    fn get_line_from_path(path: &impl AsRef<Path>) -> Result<usize, ParseIntError> {
-        let line = path
-            .as_ref()
-            .display()
-            .to_string()
-            .chars()
-            .rev()
-            .take_while(|c| c.is_numeric())
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect::<String>();
-        line.parse::<usize>()
-    }
-
-    fn is_correct_extension(&self, path: impl AsRef<Path>) -> bool {
-        path.as_ref()
-            .to_string_lossy()
-            .to_lowercase()
-            .ends_with(&self.extension)
     }
 
     fn process_file(&mut self, file: impl AsRef<Path>, filter: &Filter) -> Result<bool> {
@@ -111,6 +86,34 @@ impl App {
         slim_server.close()?;
         Ok(fail)
     }
+}
+
+/// Splits `file.md:12` into the path and the selected line.
+pub fn split_selector(path: &Path) -> (PathBuf, Option<usize>) {
+    if let Ok(line) = get_line_from_path(path) {
+        if let Some(remaining) = path.to_string_lossy().strip_suffix(&format!(":{line}")) {
+            return (PathBuf::from(remaining), Some(line));
+        }
+    }
+    (path.to_path_buf(), None)
+}
+
+fn get_line_from_path(path: &Path) -> Result<usize, ParseIntError> {
+    let line = path
+        .display()
+        .to_string()
+        .chars()
+        .rev()
+        .take_while(|c| c.is_numeric())
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    line.parse::<usize>()
+}
+
+pub fn has_extension(path: &Path, extension: &str) -> bool {
+    path.to_string_lossy().to_lowercase().ends_with(extension)
 }
 
 pub fn get_list_of_files(dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {

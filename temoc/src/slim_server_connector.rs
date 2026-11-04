@@ -19,16 +19,20 @@ pub fn build_slim_server_connector(
             pipe_output,
         })
     } else {
-        let mut rng = rand::thread_rng();
-        let available = (u16::MAX - port).saturating_add(1);
-        let pool_size = pool_size.max(1).min(available);
-        let offset = rng.gen_range(0..pool_size);
         Box::new(TcpSlimServerConnector {
             command,
-            port: CyclePort::new(port + offset, port, pool_size),
+            port: random_cycle_port(port, pool_size),
             pipe_output,
         })
     }
+}
+
+pub fn random_cycle_port(port: u16, pool_size: u16) -> CyclePort {
+    let mut rng = rand::thread_rng();
+    let available = (u16::MAX - port).saturating_add(1);
+    let pool_size = pool_size.max(1).min(available);
+    let offset = rng.gen_range(0..pool_size);
+    CyclePort::new(port + offset, port, pool_size)
 }
 
 pub trait SlimServerConnector {

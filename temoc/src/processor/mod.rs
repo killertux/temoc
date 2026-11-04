@@ -1,6 +1,6 @@
 use self::{
     markdown_commands::{get_commands_from_markdown, Snooze},
-    slim_instructions_from_commands::ExpectedResulWithSnooze,
+    slim_instructions_from_commands::{get_file_plan, ExpectedResulWithSnooze, FilePlan},
 };
 use crate::processor::markdown_commands::MarkdownCommand;
 use crate::processor::{
@@ -20,6 +20,10 @@ use std::{
 
 mod markdown_commands;
 mod slim_instructions_from_commands;
+pub mod stream;
+pub mod slim_plan {
+    pub use super::slim_instructions_from_commands::FilePlan;
+}
 mod validate_result;
 
 #[derive(Debug, Default)]
@@ -65,7 +69,7 @@ impl Filter {
     }
 
     pub fn apply(&self, commands: Vec<MarkdownCommand>) -> Vec<MarkdownCommand> {
-        commands
+        let mut commands: Vec<MarkdownCommand> = commands
             .into_iter()
             .filter(|command| {
                 self.filters.iter().all(|filter| match filter {
@@ -74,12 +78,33 @@ impl Filter {
                         MarkdownCommand::Import { .. } => true,
                     },
                     FilterType::Line(line) => match command {
-                        MarkdownCommand::DecisionTable { class, .. } => class.1.line() == *line,
+                        MarkdownCommand::DecisionTable { class, table, .. } => {
+                            class.1.line() == *line
+                                || table.iter().any(|row| row.position.line() == *line)
+                        }
                         MarkdownCommand::Import { .. } => true,
                     },
                 })
             })
-            .collect()
+            .collect();
+        for filter in &self.filters {
+            if let FilterType::Line(line) = filter {
+                commands.iter_mut().for_each(|command| {
+                    keep_only_selected_row(command, *line);
+                });
+            }
+        }
+        commands
+    }
+}
+
+/// A selector on a row runs just that row, while one on the directive runs
+/// the whole table.
+fn keep_only_selected_row(command: &mut MarkdownCommand, line: usize) {
+    if let MarkdownCommand::DecisionTable { class, table, .. } = command {
+        if class.1.line() != line {
+            table.retain(|row| row.position.line() == line);
+        }
     }
 }
 
@@ -88,10 +113,8 @@ pub fn process_markdown_into_instructions(
     filter: &Filter,
 ) -> Result<(Vec<Instruction>, Vec<ExpectedResulWithSnooze>)> {
     let file_path = file_path.as_ref();
-    let file_path_display = file_path.display().to_string();
-    print!("Testing file {file_path_display}...");
-    let markdown = parse_markdown(file_path)?;
-    let commands = filter.apply(get_commands_from_markdown(markdown, file_path_display)?);
+    print!("Testing file {}...", file_path.display());
+    let commands = load_commands(file_path, filter)?;
     if !commands
         .iter()
         .any(|command| matches!(command, MarkdownCommand::DecisionTable { .. }))
@@ -99,6 +122,26 @@ pub fn process_markdown_into_instructions(
         return Ok((vec![], vec![]));
     }
     Ok(get_instructions_from_commands(commands))
+}
+
+fn load_commands(file_path: &Path, filter: &Filter) -> Result<Vec<MarkdownCommand>> {
+    let markdown = parse_markdown(file_path)?;
+    Ok(filter.apply(get_commands_from_markdown(
+        markdown,
+        file_path.display().to_string(),
+    )?))
+}
+
+/// Reads a file into the batches that run it. `None` when no table matches.
+pub fn load_file_plan(file_path: &Path, filter: &Filter) -> Result<Option<FilePlan>> {
+    let commands = load_commands(file_path, filter)?;
+    if !commands
+        .iter()
+        .any(|command| matches!(command, MarkdownCommand::DecisionTable { .. }))
+    {
+        return Ok(None);
+    }
+    Ok(Some(get_file_plan(commands)))
 }
 
 pub fn execute_instructions_and_print_result<R: Read, W: Write>(
@@ -160,24 +203,28 @@ mod test {
                 class: Class("Calculator".into(), Position::new(1, 1)),
                 r#type: DecisionTableType::MultipleSetterAndGetters,
                 table: vec![],
+                columns: vec![],
                 snoozed: Snooze::not_snooze(),
             },
             MarkdownCommand::DecisionTable {
                 class: Class("Calculator".into(), Position::new(10, 1)),
                 r#type: DecisionTableType::MultipleSetterAndGetters,
                 table: vec![],
+                columns: vec![],
                 snoozed: Snooze::not_snooze(),
             },
             MarkdownCommand::DecisionTable {
                 class: Class("Calculator2".into(), Position::new(11, 1)),
                 r#type: DecisionTableType::MultipleSetterAndGetters,
                 table: vec![],
+                columns: vec![],
                 snoozed: Snooze::not_snooze(),
             },
             MarkdownCommand::DecisionTable {
                 class: Class("AnotherFixture".into(), Position::new(11, 1)),
                 r#type: DecisionTableType::MultipleSetterAndGetters,
                 table: vec![],
+                columns: vec![],
                 snoozed: Snooze::not_snooze(),
             },
             MarkdownCommand::Import {
@@ -192,18 +239,21 @@ mod test {
                     class: Class("Calculator".into(), Position::new(1, 1)),
                     r#type: DecisionTableType::MultipleSetterAndGetters,
                     table: vec![],
+                    columns: vec![],
                     snoozed: Snooze::not_snooze(),
                 },
                 MarkdownCommand::DecisionTable {
                     class: Class("Calculator".into(), Position::new(10, 1)),
                     r#type: DecisionTableType::MultipleSetterAndGetters,
                     table: vec![],
+                    columns: vec![],
                     snoozed: Snooze::not_snooze(),
                 },
                 MarkdownCommand::DecisionTable {
                     class: Class("Calculator2".into(), Position::new(11, 1)),
                     r#type: DecisionTableType::MultipleSetterAndGetters,
                     table: vec![],
+                    columns: vec![],
                     snoozed: Snooze::not_snooze(),
                 },
                 MarkdownCommand::Import {
@@ -224,6 +274,7 @@ mod test {
                 class: Class("Calculator".into(), Position::new(1, 1)),
                 r#type: DecisionTableType::MultipleSetterAndGetters,
                 table: vec![],
+                columns: vec![],
                 snoozed: Snooze::not_snooze(),
             },
             MarkdownCommand::Import {
@@ -235,6 +286,40 @@ mod test {
         assert_eq!(filtered, commands);
     }
 
+    fn row(line: usize) -> crate::processor::markdown_commands::TableRow {
+        crate::processor::markdown_commands::TableRow {
+            position: Position::new(line, 1),
+            setters: vec![],
+            getters: vec![],
+        }
+    }
+
+    fn table_at(line: usize, rows: Vec<usize>) -> MarkdownCommand {
+        MarkdownCommand::DecisionTable {
+            class: Class("Calculator".into(), Position::new(line, 1)),
+            r#type: DecisionTableType::MultipleSetterAndGetters,
+            table: rows.into_iter().map(row).collect(),
+            columns: vec![],
+            snoozed: Snooze::not_snooze(),
+        }
+    }
+
+    #[test]
+    fn line_filter_on_a_row_keeps_only_that_row() {
+        let filtered = Filter::new()
+            .line(12)
+            .apply(vec![table_at(1, vec![4, 5]), table_at(10, vec![12, 13])]);
+        assert_eq!(vec![table_at(10, vec![12])], filtered);
+    }
+
+    #[test]
+    fn line_filter_on_a_directive_keeps_every_row() {
+        let filtered = Filter::new()
+            .line(10)
+            .apply(vec![table_at(10, vec![12, 13])]);
+        assert_eq!(vec![table_at(10, vec![12, 13])], filtered);
+    }
+
     #[test]
     fn test_filter_line() {
         let filter = Filter::new().line(10);
@@ -243,12 +328,14 @@ mod test {
                 class: Class("Calculator".into(), Position::new(1, 1)),
                 r#type: DecisionTableType::MultipleSetterAndGetters,
                 table: vec![],
+                columns: vec![],
                 snoozed: Snooze::not_snooze(),
             },
             MarkdownCommand::DecisionTable {
                 class: Class("Calculator".into(), Position::new(10, 1)),
                 r#type: DecisionTableType::MultipleSetterAndGetters,
                 table: vec![],
+                columns: vec![],
                 snoozed: Snooze::not_snooze(),
             },
             MarkdownCommand::Import {
@@ -263,6 +350,7 @@ mod test {
                     class: Class("Calculator".into(), Position::new(10, 1)),
                     r#type: DecisionTableType::MultipleSetterAndGetters,
                     table: vec![],
+                    columns: vec![],
                     snoozed: Snooze::not_snooze(),
                 },
                 MarkdownCommand::Import {

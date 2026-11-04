@@ -101,7 +101,8 @@ where
 {
     fn drop(&mut self) {
         if !self.closed {
-            self.say_goodbye().expect("Error sending goodbye");
+            // The server may already be gone, and a destructor must not panic.
+            let _ = self.say_goodbye();
         }
     }
 }

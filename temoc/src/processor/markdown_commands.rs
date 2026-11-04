@@ -17,6 +17,7 @@ pub enum MarkdownCommand {
         class: Class,
         r#type: DecisionTableType,
         table: Vec<TableRow>,
+        columns: Vec<String>,
         snoozed: Snooze,
     },
 }
@@ -41,6 +42,10 @@ impl Position {
 
     pub fn line(&self) -> usize {
         self.line
+    }
+
+    pub fn column(&self) -> usize {
+        self.column
     }
 }
 
@@ -90,6 +95,11 @@ impl Snooze {
         Self { date: Some(date) }
     }
 
+    /// The snooze date, whether or not it has expired.
+    pub fn until(&self) -> Option<String> {
+        self.date.map(|_| self.to_string())
+    }
+
     pub fn should_snooze(&self) -> bool {
         match self.date {
             None => false,
@@ -131,8 +141,8 @@ pub fn get_commands_from_markdown(
                     incorrect_node_error(&node, file_path)
                 )
             };
-            let rows = parse_table_rows(table, file_path)?;
-            result.push(decision_table_command(test_class, rows)?);
+            let (columns, rows) = parse_table_rows(table, file_path)?;
+            result.push(decision_table_command(test_class, columns, rows)?);
             continue;
         }
         match node {
@@ -172,9 +182,10 @@ pub fn get_commands_from_markdown(
     Ok(result)
 }
 
-fn parse_table_rows(table: Table, file_path: &str) -> Result<Vec<TableRow>> {
+fn parse_table_rows(table: Table, file_path: &str) -> Result<(Vec<String>, Vec<TableRow>)> {
     let mut rows = Vec::new();
     let mut methods = Vec::new();
+    let mut columns = Vec::new();
     for row in table.children {
         let Node::TableRow(row) = row else {
             bail!(
@@ -183,7 +194,12 @@ fn parse_table_rows(table: Table, file_path: &str) -> Result<Vec<TableRow>> {
             )
         };
         if methods.is_empty() {
-            methods = parse_header_cells(row.children, file_path)?;
+            let header = parse_header_cells(row.children, file_path)?;
+            columns = header.iter().map(|(text, ..)| text.clone()).collect();
+            methods = header
+                .into_iter()
+                .map(|(_, method, method_type)| (method, method_type))
+                .collect();
             continue;
         }
         let position = row.position.ok_or(anyhow!("Expected position"))?.into();
@@ -194,10 +210,13 @@ fn parse_table_rows(table: Table, file_path: &str) -> Result<Vec<TableRow>> {
             file_path,
         )?);
     }
-    Ok(rows)
+    Ok((columns, rows))
 }
 
-fn parse_header_cells(cells: Vec<Node>, file_path: &str) -> Result<Vec<(MethodName, MethodType)>> {
+fn parse_header_cells(
+    cells: Vec<Node>,
+    file_path: &str,
+) -> Result<Vec<(String, MethodName, MethodType)>> {
     let mut methods = Vec::new();
     for cell in cells {
         let Node::TableCell(cell) = cell else {
@@ -207,7 +226,9 @@ fn parse_header_cells(cells: Vec<Node>, file_path: &str) -> Result<Vec<(MethodNa
             )
         };
         let (text, position) = get_text_and_position(cell)?;
-        methods.push(parse_method(text.trim(), position));
+        let text = text.trim();
+        let (method, method_type) = parse_method(text, position);
+        methods.push((text.to_string(), method, method_type));
     }
     Ok(methods)
 }
@@ -268,7 +289,11 @@ fn parse_table_row(
     Ok(table_row)
 }
 
-fn decision_table_command(test_class: Class, rows: Vec<TableRow>) -> Result<MarkdownCommand> {
+fn decision_table_command(
+    test_class: Class,
+    columns: Vec<String>,
+    rows: Vec<TableRow>,
+) -> Result<MarkdownCommand> {
     let mut snoozed = Snooze::not_snooze();
     let mut stripped_test_class = test_class.0.clone();
     if let Some((class, rest)) = test_class.0.split_once(" -- ") {
@@ -286,6 +311,7 @@ fn decision_table_command(test_class: Class, rows: Vec<TableRow>) -> Result<Mark
         class: Class(stripped_test_class, test_class.1),
         r#type,
         table: rows,
+        columns,
         snoozed,
     })
 }
@@ -408,6 +434,7 @@ This is a calculator example
                             )]
                         }
                     ],
+                    columns: vec!["a".into(), "b".into(), "sum?".into()],
                     snoozed: Snooze::not_snooze(),
                 }
             ],
@@ -445,6 +472,7 @@ This is a calculator example
                         Value("expected".into(), Position::new(6, 11))
                     )]
                 },],
+                columns: vec!["set a".into(), "a getter?".into()],
                 snoozed: Snooze::not_snooze(),
             }],
             commands
@@ -497,6 +525,7 @@ This is a calculator example
                         Value("expected".into(), Position::new(6, 23))
                     )]
                 },],
+                columns: vec!["a".into(), "# comment".into(), "b?".into()],
                 snoozed: Snooze::not_snooze(),
             }],
             commands
@@ -536,6 +565,7 @@ This is a calculator example
                         Value("expected".into(), Position::new(6, 11))
                     )]
                 },],
+                columns: vec!["a".into(), "b?".into()],
                 snoozed: Snooze::not_snooze(),
             }],
             commands
@@ -572,6 +602,7 @@ This is a calculator example
                         Value("expected".into(), Position::new(6, 11))
                     )]
                 },],
+                columns: vec!["a".into(), "b?".into()],
                 snoozed: Snooze::snooze(NaiveDate::from_ymd_opt(2023, 11, 20).unwrap()),
             }],
             commands
@@ -611,6 +642,7 @@ This is a calculator example
                         Value("expected".into(), Position::new(6, 11))
                     )]
                 },],
+                columns: vec!["a".into(), "b?".into()],
                 snoozed: Snooze::snooze(NaiveDate::from_ymd_opt(2023, 11, 20).unwrap()),
             }],
             commands
@@ -701,6 +733,7 @@ This is a calculator example
                         getters: vec![]
                     }
                 ],
+                columns: vec!["column".into()],
                 snoozed: Snooze::not_snooze(),
             }],
             commands

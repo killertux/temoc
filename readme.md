@@ -55,3 +55,126 @@ Testing file temoc/examples/calculator.md...OK
 Testing file temoc/examples/calculator_2.md...SNOOZED
 
 ```
+
+To run part of a file, add a line number to its path. The line of a `decisionTable` directive runs that table, and the line of a table row runs only that row, together with the table's `Make`, `beginTable` and `endTable`. A row run alone can't see symbols set by other rows.
+
+## Machine-readable output
+
+With `--output jsonl`, or `output = "jsonl"` in the configuration file, Temoc prints one JSON object per line while the tests run. Tools can use it to show each row as it finishes. The default is `--output text`.
+
+```jsonl
+{"type":"run_started","schema":1,"temoc_version":"0.9.7"}
+{"type":"file_started","file":"a.md","tables":[{"line":7,"class":"Calculator","columns":["a","b","sum?"],"rows":[11],"snoozed_until":null}]}
+{"type":"table_started","file":"a.md","line":7}
+{"type":"row_started","file":"a.md","table":7,"line":11}
+{"type":"row_finished","file":"a.md","table":7,"line":11,"status":"failed","duration_ms":2,"checks":[{"role":"setter","method":"setA","column":3,"status":"passed","value":"1"},{"role":"setter","method":"setB","column":7,"status":"passed","value":"2"},{"role":"getter","method":"sum","column":11,"status":"failed","expected":"4","actual":{"kind":"value","value":"3"}}]}
+{"type":"table_finished","file":"a.md","line":7,"status":"failed","duration_ms":3,"counts":{"failed":1}}
+{"type":"file_finished","file":"a.md","status":"failed","duration_ms":9,"counts":{"failed":1}}
+{"type":"run_finished","status":"failed","exit_code":1,"duration_ms":40,"counts":{"failed":1}}
+```
+
+### What you can rely on
+
+- Every stdout line is one complete JSON object, flushed as it is written. Nothing else goes to stdout. Server output is only reported through `output` events.
+- `run_finished` is the last line, unless Temoc is killed outright, so a missing `run_finished` means a crash. Invalid command line arguments are the exception: they print a usage error on stderr and exit with 2, before any event.
+- The events of a file come in order, and a `row_finished` comes before the next `row_started`.
+- Every row listed in `file_started` gets one `row_finished`.
+- The exit code is 0 when nothing really failed and 1 otherwise, including runs with a `run_error` or a cancelled run. Snoozed failures and ignored tests don't fail a run.
+- All lines and columns are 1-based and match the markdown source. Paths are as given on the command line, without the line selector.
+- Consumers must ignore unknown fields and event types. Adding them doesn't change `schema`. Removing or changing something does.
+
+### Events
+
+| Event | Fields |
+| ----- | ------ |
+| `run_started` | `schema`, `temoc_version` |
+| `file_started` | `file`, `tables`: a list with `line` (of the directive), `class`, `columns`, `rows` (their lines), `snoozed_until` |
+| `table_started` | `file`, `line`. Not sent for a table that never runs. |
+| `row_started` | `file`, `table`, `line`. Not sent for a row that never runs. |
+| `row_finished` | `file`, `table`, `line`, `status`, `duration_ms`, `checks`, and `message` if the connection was lost during the row |
+| `table_finished` | `file`, `line`, `status`, `duration_ms`, `counts` |
+| `file_finished` | `file`, `status`, `duration_ms`, `counts` |
+| `setup_failed` | `file`, `line`, `phase`, `status`, `actual`, `snoozed_until` |
+| `run_error` | `kind`, `message`, `file`, `stderr` (the end of the server's stderr, if any) |
+| `output` | `stream` (`stdout` or `stderr`), `text`, and on a best effort basis `file`, `table`, `row`. Only with `-o`. |
+| `run_finished` | `status`, `exit_code`, `duration_ms`, `counts` |
+
+`counts` has the number of rows for each status, leaving out zeros.
+
+### Statuses
+
+| Status | Meaning |
+| ------ | ------- |
+| `passed` | Everything matched. |
+| `failed` | A wrong value. |
+| `error` | An exception, an unknown symbol, or anything else that isn't a wrong value. |
+| `snoozed` | A failure or error under a snooze that is still active. |
+| `skipped` | It never ran. |
+| `cancelled` | Only on `run_finished`: Temoc got SIGTERM or SIGINT, or stdout was closed. |
+
+A row, table, file or run takes its worst status, in this order: `error`, `failed`, `snoozed`, `skipped`, `passed`.
+
+### Checks
+
+Each item of `checks` has `role`, `method`, `status`, and usually `column`.
+
+| Field | Meaning |
+| ----- | ------- |
+| `role` | `setter`, `getter`, `method` (a cell of a `#method` table), `reset` or `execute`. `reset` and `execute` only appear when they fail, and have no `column`. |
+| `value` | The source text of a setter's cell. |
+| `expected` | The source text of a getter's cell. |
+| `resolved` | What a `$SYMBOL` cell stood for, in the same format as `actual`. |
+| `assigned` | The symbol set by a `$V=` cell. `actual` has the value. |
+| `actual` | What the server returned. Passing setters leave it out. |
+| `snoozed_until` | The date of the table's snooze, on any check that didn't pass. An expired snooze is a normal `failed` that keeps the date. It doesn't depend on `--show-snoozed`. |
+
+`actual` is one of:
+
+```json
+{"kind":"value","value":"4"}
+{"kind":"void"}
+{"kind":"list","value":[{"kind":"value","value":"a"}]}
+{"kind":"exception","message":"boom","detail":"the full text from the server"}
+{"kind":"missing_symbol","symbol":"NOPE"}
+{"kind":"protocol_error","message":"Different ID in response"}
+```
+
+A `#method` row is compared cell by cell. If the server's answer isn't a list with one element for each cell, there is one check for the whole row with no `column`.
+
+A setter cell that is exactly `$NAME`, for a symbol that isn't set, is a `missing_symbol` error and that row isn't sent. This is stricter than text output, which passes the text on to the fixture.
+
+### Failures outside a row
+
+`setup_failed` reports a failed `import`, `make`, `begin_table` or `end_table` as its `phase`. After a failed `make`, the rows of that table are `skipped`.
+
+`run_error` reports problems with the run itself:
+
+| `kind` | Meaning | What happens next |
+| ------ | ------- | ----------------- |
+| `no_match` | A `file:LINE` selector matched no table or row. | The next path runs. |
+| `parse_error` | A markdown file couldn't be read as tests. | The next path runs. |
+| `file_error` | A path couldn't be read. | The next path runs. |
+| `bad_config` | The configuration is invalid. | Nothing runs. |
+| `server_start_failed` | The server didn't start. | The run stops. |
+| `server_died` | The connection to the server was lost. | The run stops. |
+| `protocol_error` | The server sent something that can't be understood. | The run stops. |
+| `suite_aborted` | A fixture raised `ABORT_SLIM_SUITE`. | The run stops. |
+
+When the run stops, the rows that are left in the current file are `skipped`, and later files are not reported at all.
+
+### Control exceptions
+
+| Exception | Status of the check | What is skipped |
+| --------- | ------------------- | --------------- |
+| `ABORT_SLIM_TEST` | `error` | The rest of the file |
+| `ABORT_SLIM_SUITE` | `error` | The rest of the run |
+| `IGNORE_SCRIPT_TEST` | `skipped` | The rest of the table |
+| `IGNORE_ALL_TESTS` | `skipped` | The rest of the file |
+
+### Batches
+
+Text output sends a whole file to the server in one batch. JSONL output sends one batch for `Import`, `Make` and `beginTable`, one for each row, and one for `endTable`, on the same connection. This is how the Slim protocol works: instruction lists repeat until `bye`, and FitNesse itself sends one list per table.
+
+### Cancelling
+
+On SIGTERM or SIGINT, Temoc stops sending, stops the server, reports the remaining rows as `skipped`, and ends with a `run_finished` with the status `cancelled`. The server runs in its own process group, so that Temoc can stop what it started: it gets SIGTERM, and SIGKILL after two seconds. Because of that, signal Temoc itself and let it stop the server.
