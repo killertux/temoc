@@ -2,7 +2,7 @@
 
 use super::markdown_commands::Snooze;
 use super::slim_instructions_from_commands::{
-    Batch, ExpectedResult, ExpectedResultValue, FilePlan, MethodCell, RowPlan, TablePlan,
+    Batch, ExpectedResult, ExpectedResultValue, FileHooks, FilePlan, MethodCell, RowPlan, TablePlan,
 };
 use super::State;
 use crate::cancel::ServerControl;
@@ -160,6 +160,10 @@ impl<'a> FileRunner<'a> {
         }
     }
 
+    pub fn file(&self) -> &str {
+        self.file
+    }
+
     pub fn status(&self) -> Status {
         self.tally.status()
     }
@@ -179,7 +183,56 @@ impl<'a> FileRunner<'a> {
         }
     }
 
+    /// Runs a file between its hooks, if there are any. The tables don't run
+    /// when the hooks fixture can't be made or `beginFile` fails, and
+    /// `endFile` runs whenever the fixture was made and the server still
+    /// answers.
     pub fn run<R: Read, W: Write>(
+        &mut self,
+        connection: &mut SlimConnection<R, W>,
+        plan: FilePlan,
+        hooks: Option<FileHooks>,
+    ) -> Option<Halt> {
+        let Some(hooks) = hooks else {
+            return self.run_tables(connection, plan);
+        };
+        let (made, halt) = self.run_hook(connection, hooks.make);
+        if !made || halt.is_some() {
+            self.skip(plan);
+            return halt;
+        }
+        let (began, mut halt) = self.run_hook(connection, hooks.begin);
+        if began && halt.is_none() {
+            halt = self.run_tables(connection, plan);
+        } else {
+            self.skip(plan);
+        }
+        if matches!(halt, Some(Halt::Cancelled | Halt::Connection { .. })) {
+            return halt;
+        }
+        let (_, end_halt) = self.run_hook(connection, hooks.end);
+        // A file that already stopped the run keeps its reason.
+        match halt {
+            Some(Halt::Suite(_)) => halt,
+            _ => end_halt.or(halt),
+        }
+    }
+
+    /// Runs one part of the file hooks. Returns whether it passed, and why to
+    /// stop, if that's the case.
+    fn run_hook<R: Read, W: Write>(
+        &mut self,
+        connection: &mut SlimConnection<R, W>,
+        batch: Batch,
+    ) -> (bool, Option<Halt>) {
+        self.log.set_location(Some(self.file), None, None);
+        let mut tally = Tally::default();
+        let (_, halt) = self.run_lifecycle(connection, batch, &mut tally);
+        self.tally.merge(&tally);
+        (tally.status() == Status::Passed, halt)
+    }
+
+    fn run_tables<R: Read, W: Write>(
         &mut self,
         connection: &mut SlimConnection<R, W>,
         plan: FilePlan,
@@ -564,6 +617,8 @@ fn phase(instruction: &Instruction) -> Phase {
         Instruction::Import { .. } => Phase::Import,
         Instruction::Make { .. } => Phase::Make,
         Instruction::Call { function, .. } if function == "beginTable" => Phase::BeginTable,
+        Instruction::Call { function, .. } if function == "beginFile" => Phase::BeginFile,
+        Instruction::Call { function, .. } if function == "endFile" => Phase::EndFile,
         _ => Phase::EndTable,
     }
 }

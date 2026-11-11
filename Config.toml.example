@@ -16,3 +16,8 @@ show_snoozed = true
 pipe_output = true
 # How to report results: "text" or "jsonl". Default is "text"
 output = "text"
+# Start the slim server once for the whole run, instead of once for each file. Default is false
+persistent_server = false
+# Fixture class whose `beginFile` and `endFile` methods are called around every file.
+# This is a Temoc extension, not part of FitNesse.
+# file_hooks = "Calculator.Fixtures.SpecHooks"

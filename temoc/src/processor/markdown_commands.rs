@@ -35,7 +35,6 @@ pub struct Position {
 }
 
 impl Position {
-    #[allow(dead_code)]
     pub fn new(line: usize, column: usize) -> Self {
         Self { line, column }
     }

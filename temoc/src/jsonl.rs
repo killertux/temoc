@@ -2,13 +2,14 @@
 
 use crate::app::{get_list_of_files, has_extension, split_selector};
 use crate::cancel::{cancel_on_signals, ServerControl};
-use crate::captured_server::{CapturedServerConnector, ServerLog};
+use crate::captured_server::{CapturedServer, CapturedServerConnector, ServerLog};
 use crate::events::{Counts, Event, EventSink, RunErrorKind, Status, SCHEMA_VERSION};
 use crate::processor::stream::{file_started, FileRunner, Halt};
-use crate::processor::{load_file_plan, slim_plan::FilePlan, Filter};
+use crate::processor::{file_hooks, load_file_plan, slim_plan::FilePlan, Filter};
 use anyhow::Result;
 use slim_protocol::SlimConnection;
 use std::fs::metadata;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -24,7 +25,30 @@ pub struct JsonlOptions {
     pub recursive: bool,
     pub extension: String,
     pub filter: Filter,
+    /// Keeps one server for the whole run, instead of one for each file.
+    pub persistent_server: bool,
+    /// The fixture whose `beginFile` and `endFile` surround every file.
+    pub file_hooks: Option<String>,
     pub paths: Vec<PathBuf>,
+}
+
+/// A running server and the connection to it.
+struct Session {
+    server: CapturedServer,
+    connection: SlimConnection<Box<dyn Read>, Box<dyn Write>>,
+}
+
+impl Session {
+    /// Says `bye` and lets the server exit by itself.
+    fn close(self) {
+        let _ = self.connection.close();
+        self.server.stop_within(BYE_GRACE);
+    }
+
+    fn stop_now(self) -> Option<std::process::ExitStatus> {
+        drop(self.connection);
+        self.server.stop_now()
+    }
 }
 
 /// Runs everything and returns the exit code.
@@ -85,6 +109,8 @@ struct JsonlRun<'a> {
     status: Status,
     counts: Counts,
     stopped: bool,
+    /// The server that is kept between files, with `persistent_server`.
+    session: Option<Session>,
 }
 
 impl<'a> JsonlRun<'a> {
@@ -110,12 +136,21 @@ impl<'a> JsonlRun<'a> {
             status: Status::Passed,
             counts: Counts::default(),
             stopped: false,
+            session: None,
         }
     }
 
     fn process_all(&mut self) {
         for path in self.options.paths.clone() {
             self.process_path(&path);
+        }
+        if let Some(session) = self.session.take() {
+            self.log.set_location(None, None, None);
+            if self.control.is_cancelled() {
+                session.stop_now();
+            } else {
+                session.close();
+            }
         }
     }
 
@@ -217,52 +252,65 @@ impl<'a> JsonlRun<'a> {
     }
 
     fn execute(&mut self, runner: &mut FileRunner<'_>, plan: FilePlan) -> Option<Halt> {
-        let mut server = match self.connector.start() {
-            Ok(server) => server,
-            Err(error) => {
-                runner.skip(plan);
-                return Some(self.start_failed(format!("{error:#}")));
-            }
+        let mut session = match self.session.take() {
+            Some(session) => session,
+            None => match self.connect() {
+                Ok(session) => session,
+                Err(halt) => {
+                    runner.skip(plan);
+                    return Some(halt);
+                }
+            },
         };
-        let connection = server.reader().and_then(|reader| {
-            let writer = server.writer()?;
-            Ok(SlimConnection::new(reader, writer)?)
-        });
-        let mut connection = match connection {
-            Ok(connection) => connection,
-            Err(error) => {
-                let status = server.stop_now();
-                runner.skip(plan);
-                return Some(self.start_failed(with_exit_status(format!("{error:#}"), status)));
-            }
-        };
+        let hooks = self
+            .options
+            .file_hooks
+            .as_ref()
+            .map(|class| file_hooks(class, runner.file()));
 
-        let halt = runner.run(&mut connection, plan);
+        let halt = runner.run(&mut session.connection, plan, hooks);
         match halt {
             Some(Halt::Connection { kind, message }) => {
-                // A server that dies mid message looks like a framing error.
-                // This comes first because `bye` would end a healthy server.
-                let kind = if server.has_exited() {
+                let kind = if session.server.has_exited() {
                     RunErrorKind::ServerDied
                 } else {
                     kind
                 };
-                drop(connection);
-                let status = server.stop_now();
+                let status = session.stop_now();
                 Some(Halt::Connection {
                     kind,
                     message: with_exit_status(message, status),
                 })
             }
             Some(Halt::Cancelled) => {
-                drop(connection);
-                server.stop_now();
+                session.stop_now();
                 Some(Halt::Cancelled)
             }
             halt => {
-                let _ = connection.close();
-                server.stop_within(BYE_GRACE);
+                if self.options.persistent_server {
+                    self.session = Some(session);
+                } else {
+                    session.close();
+                }
                 halt
+            }
+        }
+    }
+
+    fn connect(&mut self) -> Result<Session, Halt> {
+        let mut server = match self.connector.start() {
+            Ok(server) => server,
+            Err(error) => return Err(self.start_failed(format!("{error:#}"))),
+        };
+        let connection = server.reader().and_then(|reader| {
+            let writer = server.writer()?;
+            Ok(SlimConnection::new(reader, writer)?)
+        });
+        match connection {
+            Ok(connection) => Ok(Session { server, connection }),
+            Err(error) => {
+                let status = server.stop_now();
+                Err(self.start_failed(with_exit_status(format!("{error:#}"), status)))
             }
         }
     }

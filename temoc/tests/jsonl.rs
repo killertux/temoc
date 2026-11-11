@@ -738,3 +738,296 @@ fn text_output_is_unchanged_for_failures() {
         String::from_utf8(output.stdout).unwrap()
     );
 }
+
+const CALLS: &str = "| calls? |\n|---|\n";
+const HOOK_LOG: &str = "| hook log? |\n|---|\n";
+
+fn output_texts(events: &[Value]) -> Vec<String> {
+    of_type(events, "output")
+        .iter()
+        .map(|event| event["text"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn every_file_gets_its_own_server_by_default() {
+    let dir = workspace();
+    let a = write(&dir, "a.md", &table("Probe", &format!("{CALLS}| 1 |")));
+    let b = write(&dir, "b.md", &table("Probe", &format!("{CALLS}| 1 |")));
+    let (events, code) = run(&format!("{} %p", probe()), &[&a, &b]);
+    assert_eq!(0, code);
+    assert_eq!(vec!["passed", "passed"], row_statuses(&events));
+}
+
+#[test]
+fn a_persistent_server_is_shared_by_every_file() {
+    let dir = workspace();
+    let a = write(&dir, "a.md", &table("Probe", &format!("{CALLS}| 1 |")));
+    let b = write(&dir, "b.md", &table("Probe", &format!("{CALLS}| 2 |")));
+    let (events, code) = run(&format!("{} %p", probe()), &["--persistent-server", &a, &b]);
+    assert_eq!(0, code);
+    assert_eq!(vec!["passed", "passed"], row_statuses(&events));
+}
+
+#[test]
+fn a_persistent_server_survives_a_file_that_aborts() {
+    let dir = workspace();
+    let a = write(
+        &dir,
+        "a.md",
+        &table("Probe", "| abort test? |\n|---|\n| x |\n| x |"),
+    );
+    let b = write(&dir, "b.md", &table("Probe", &format!("{CALLS}| 1 |")));
+    let (events, code) = run(&format!("{} %p", probe()), &["--persistent-server", &a, &b]);
+    assert_eq!(1, code);
+    assert_eq!(vec!["error", "skipped", "passed"], row_statuses(&events));
+}
+
+#[test]
+fn file_hooks_surround_every_file() {
+    let dir = workspace();
+    let a = write(
+        &dir,
+        "a.md",
+        &table("Probe", &format!("{HOOK_LOG}| begin a.md |")),
+    );
+    let b = write(
+        &dir,
+        "b.md",
+        &table("Probe", &format!("{HOOK_LOG}| begin a.md,end,begin b.md |")),
+    );
+    let (events, code) = run(
+        &format!("{} %p", probe()),
+        &["--persistent-server", "--file-hooks", "Hooks", &a, &b],
+    );
+    assert_eq!(0, code);
+    assert_eq!(vec!["passed", "passed"], row_statuses(&events));
+    assert!(of_type(&events, "setup_failed").is_empty());
+}
+
+#[test]
+fn file_hooks_get_the_path_of_the_file() {
+    let dir = workspace();
+    let file = write(
+        &dir,
+        "a.md",
+        &table("Probe", &format!("{HOOK_LOG}| begin a.md |")),
+    );
+    let (events, code) = run(
+        &format!("{} %p", probe()),
+        &["--file-hooks", "Hooks", &format!("{file}:5")],
+    );
+    assert_eq!(0, code);
+    assert_eq!(vec!["passed"], row_statuses(&events));
+}
+
+#[test]
+fn end_file_runs_after_a_file_that_aborts() {
+    let dir = workspace();
+    let file = write(
+        &dir,
+        "a.md",
+        &table("Probe", "| abort test? |\n|---|\n| x |\n| x |"),
+    );
+    let (events, code) = run(
+        &format!("{} %p", probe()),
+        &["--file-hooks", "Hooks", "-o", &file],
+    );
+    assert_eq!(1, code);
+    assert_eq!(vec!["error", "skipped"], row_statuses(&events));
+    assert_eq!(vec!["end_file ran\n"], output_texts(&events));
+}
+
+#[test]
+fn a_failed_begin_file_skips_the_file_and_still_ends_it() {
+    let dir = workspace();
+    let file = write(
+        &dir,
+        "broken.md",
+        &table("Probe", &format!("{VALUES}| 1 | 1 |\n| 2 | 2 |")),
+    );
+    let (events, code) = run(
+        &format!("{} %p", probe()),
+        &["--file-hooks", "Hooks", "-o", &file],
+    );
+    assert_eq!(1, code);
+    assert_eq!(vec!["skipped", "skipped"], row_statuses(&events));
+    let failures = of_type(&events, "setup_failed");
+    assert_eq!(1, failures.len());
+    assert_eq!("begin_file", failures[0]["phase"]);
+    assert_eq!(0, failures[0]["line"]);
+    assert_eq!("error", failures[0]["status"]);
+    assert_eq!("exception", failures[0]["actual"]["kind"]);
+    assert_eq!("error", of_type(&events, "file_finished")[0]["status"]);
+    assert_eq!(vec!["end_file ran\n"], output_texts(&events));
+}
+
+#[test]
+fn begin_file_can_ignore_the_file() {
+    let dir = workspace();
+    let ignored = write(
+        &dir,
+        "ignored.md",
+        &table("Probe", &format!("{VALUES}| 1 | 2 |")),
+    );
+    let next = write(
+        &dir,
+        "next.md",
+        &table("Probe", &format!("{VALUES}| 1 | 1 |")),
+    );
+    let (events, code) = run(
+        &format!("{} %p", probe()),
+        &[
+            "--persistent-server",
+            "--file-hooks",
+            "Hooks",
+            &ignored,
+            &next,
+        ],
+    );
+    assert_eq!(0, code);
+    assert_eq!(vec!["skipped", "passed"], row_statuses(&events));
+}
+
+#[test]
+fn a_missing_file_hooks_fixture_skips_the_file() {
+    let dir = workspace();
+    let file = write(&dir, "a.md", &table("Probe", &format!("{VALUES}| 1 | 1 |")));
+    let (events, code) = run(&format!("{} %p", probe()), &["--file-hooks", "Nope", &file]);
+    assert_eq!(1, code);
+    assert_eq!(vec!["skipped"], row_statuses(&events));
+    let failures = of_type(&events, "setup_failed");
+    assert_eq!(1, failures.len());
+    assert_eq!("make", failures[0]["phase"]);
+    assert_eq!(0, failures[0]["line"]);
+}
+
+#[test]
+fn file_hook_methods_are_optional() {
+    let dir = workspace();
+    let file = write(&dir, "a.md", &table("Probe", &format!("{VALUES}| 1 | 1 |")));
+    let (events, code) = run(
+        &format!("{} %p", probe()),
+        &["--file-hooks", "Probe", &file],
+    );
+    assert_eq!(0, code);
+    assert_eq!(vec!["passed"], row_statuses(&events));
+    assert!(of_type(&events, "setup_failed").is_empty());
+}
+
+#[test]
+fn a_persistent_server_and_file_hooks_can_be_set_in_the_config_file() {
+    let dir = workspace();
+    let a = write(
+        &dir,
+        "a.md",
+        &table("Probe", &format!("{HOOK_LOG}| begin a.md |")),
+    );
+    let b = write(
+        &dir,
+        "b.md",
+        &table("Probe", &format!("{HOOK_LOG}| begin a.md,end,begin b.md |")),
+    );
+    let config = write(
+        &dir,
+        "Config.toml",
+        "persistent_server = true\nfile_hooks = \"Hooks\"\n",
+    );
+    let (events, code) = run(&format!("{} %p", probe()), &["-c", &config, &a, &b]);
+    assert_eq!(0, code);
+    assert_eq!(vec!["passed", "passed"], row_statuses(&events));
+}
+
+fn text(args: &[&str]) -> (String, Option<i32>) {
+    let output = Command::new(TEMOC)
+        .args(["-p", "1", "-x"])
+        .arg(format!("{} %p", probe()))
+        .args(args)
+        .output()
+        .unwrap();
+    (
+        String::from_utf8(output.stdout).unwrap(),
+        output.status.code(),
+    )
+}
+
+#[test]
+fn text_output_runs_file_hooks_on_a_persistent_server() {
+    let dir = workspace();
+    let a = write(
+        &dir,
+        "a.md",
+        &table("Probe", &format!("{HOOK_LOG}| begin a.md |")),
+    );
+    let b = write(
+        &dir,
+        "b.md",
+        &table("Probe", &format!("{HOOK_LOG}| begin a.md,end,begin b.md |")),
+    );
+    let (stdout, code) = text(&["--persistent-server", "--file-hooks", "Hooks", &a, &b]);
+    assert_eq!(
+        format!("Testing file {a}...OK\nTesting file {b}...OK\n"),
+        stdout
+    );
+    assert_eq!(Some(0), code);
+}
+
+#[test]
+fn text_output_starts_a_server_for_each_file_by_default() {
+    let dir = workspace();
+    let a = write(&dir, "a.md", &table("Probe", &format!("{CALLS}| 1 |")));
+    let b = write(&dir, "b.md", &table("Probe", &format!("{CALLS}| 1 |")));
+    let (stdout, code) = text(&[&a, &b]);
+    assert_eq!(
+        format!("Testing file {a}...OK\nTesting file {b}...OK\n"),
+        stdout
+    );
+    assert_eq!(Some(0), code);
+}
+
+#[test]
+fn text_output_reports_a_failed_begin_file_and_skips_the_tables() {
+    let dir = workspace();
+    let broken = write(
+        &dir,
+        "broken.md",
+        &table("Probe", &format!("{VALUES}| 1 | 2 |")),
+    );
+    let next = write(
+        &dir,
+        "next.md",
+        &table(
+            "Probe",
+            &format!("{HOOK_LOG}| begin broken.md,end,begin next.md |"),
+        ),
+    );
+    let (stdout, code) = text(&[
+        "--persistent-server",
+        "--file-hooks",
+        "Hooks",
+        &broken,
+        &next,
+    ]);
+    assert_eq!(
+        format!(
+            "Testing file {broken}...FAIL\nExpected NULL or VOID or NOT FOUND, got Exception `bad begin` in {broken}:0:0 for method call beginFile\nTesting file {next}...OK\n"
+        ),
+        stdout
+    );
+    assert_eq!(Some(1), code);
+}
+
+#[test]
+fn text_output_reports_a_missing_file_hooks_fixture() {
+    let dir = workspace();
+    let file = write(&dir, "a.md", &table("Probe", &format!("{VALUES}| 1 | 1 |")));
+    let (stdout, code) = text(&["--file-hooks", "Nope", &file]);
+    assert!(
+        stdout.starts_with(&format!(
+            "Testing file {file}...FAIL\nExpected OK, got Exception"
+        )),
+        "{stdout}"
+    );
+    assert_eq!(1, stdout.matches("Expected").count(), "{stdout}");
+    assert_eq!(Some(1), code);
+}
