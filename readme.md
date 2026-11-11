@@ -25,6 +25,10 @@ You will use one of these plugins to write the test fixtures in your project. Fi
 
 After this is done, you can write your accepatance tests markdown. Take a look at our calculator example [Here](https://github.com/killertux/temoc/tree/master/temoc/examples). See the raw markdown files because there are hidden instructions. To run it, you can run `cargo run -- -c Config.toml.example`.
 
+## Spec-driven development
+
+Temoc files can be the specification itself, written before the code: describe the behaviour, see it fail, then implement until it passes. The [temoc-spec-driven-development](skills/temoc-spec-driven-development/SKILL.md) skill teaches this workflow and its good practices to coding agents. To use it with Claude Code, copy the `skills/temoc-spec-driven-development` directory into your project's `.claude/skills/` (or into `~/.claude/skills/`).
+
 ## Installing Temoc
 
 On Linux and macOS (x86_64 or aarch64), you can install the latest release with:
