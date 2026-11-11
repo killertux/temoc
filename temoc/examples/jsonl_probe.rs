@@ -5,8 +5,16 @@ use rust_slim::{
     SlimFixture, SlimValue,
 };
 use std::env::args;
+use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::thread::sleep;
 use std::time::Duration;
+
+/// How many times `calls` was asked for, in the life of this process.
+static CALLS: AtomicUsize = AtomicUsize::new(0);
+/// What the file hooks saw, in the life of this process.
+static HOOK_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 #[derive(Default)]
 struct Probe {
@@ -47,6 +55,8 @@ impl SlimFixture for Probe {
                 .parse::<i64>()
                 .map(|value| SlimValue::String((value + 1).to_string()))
                 .map_err(|error| ExecuteMethodError::ExecutionError(error.to_string())),
+            "calls" => text(&(CALLS.fetch_add(1, Ordering::SeqCst) + 1).to_string()),
+            "hook_log" => text(&HOOK_LOG.lock().unwrap().join(",")),
             "boom" => Err(ExecuteMethodError::ExecutionError("boom".into())),
             "slow" => {
                 sleep(Duration::from_millis(400));
@@ -80,9 +90,65 @@ impl SlimFixture for Probe {
     }
 }
 
+/// File hooks that misbehave for files with a telling name.
+#[derive(Default)]
+struct Hooks;
+
+impl ClassPath for Hooks {
+    fn class_path() -> String {
+        "Hooks".into()
+    }
+}
+
+impl Constructor for Hooks {
+    fn construct(_args: Vec<SlimValue>) -> Result<Self, ConstructorError> {
+        Ok(Self)
+    }
+}
+
+impl SlimFixture for Hooks {
+    fn execute_method(
+        &mut self,
+        method: &str,
+        args: Vec<SlimValue>,
+    ) -> Result<SlimValue, ExecuteMethodError> {
+        match method {
+            "begin_file" => {
+                let Some(SlimValue::String(path)) = args.into_iter().next() else {
+                    return Err(ExecuteMethodError::ExecutionError("no path".into()));
+                };
+                let name = Path::new(&path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                HOOK_LOG.lock().unwrap().push(format!("begin {name}"));
+                if name.contains("broken") {
+                    return Err(ExecuteMethodError::ExecutionError("bad begin".into()));
+                }
+                if name.contains("ignored") {
+                    return Err(ExecuteMethodError::Control(SlimControl::ignore_all_tests(
+                        "not today",
+                    )));
+                }
+                Ok(SlimValue::Void)
+            }
+            "end_file" => {
+                HOOK_LOG.lock().unwrap().push("end".into());
+                eprintln!("end_file ran");
+                Ok(SlimValue::Void)
+            }
+            _ => Err(ExecuteMethodError::MethodNotFound {
+                method: method.into(),
+                class: Self::class_path(),
+            }),
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut server = PortSlimServer::listen_from_args(args().skip(1))?;
     server.add_fixture::<Probe>();
+    server.add_fixture::<Hooks>();
     server.run()?;
     Ok(())
 }

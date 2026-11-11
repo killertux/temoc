@@ -175,6 +175,8 @@ pub enum Phase {
     Make,
     BeginTable,
     EndTable,
+    BeginFile,
+    EndFile,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

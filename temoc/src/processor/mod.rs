@@ -1,3 +1,4 @@
+pub use self::slim_instructions_from_commands::{file_hooks, Batch};
 use self::{
     markdown_commands::{get_commands_from_markdown, Snooze},
     slim_instructions_from_commands::{get_file_plan, ExpectedResulWithSnooze, FilePlan},
@@ -144,17 +145,18 @@ pub fn load_file_plan(file_path: &Path, filter: &Filter) -> Result<Option<FilePl
     Ok(Some(get_file_plan(commands)))
 }
 
-pub fn execute_instructions_and_print_result<R: Read, W: Write>(
+/// What went wrong, and the snooze it is under.
+pub type Failures = Vec<(String, Snooze)>;
+
+/// Sends one batch and returns what went wrong in it.
+pub fn execute_instructions<R: Read, W: Write>(
     connection: &mut SlimConnection<R, W>,
     file_path: &str,
-    instructions: &[Instruction],
-    expected_result: Vec<ExpectedResulWithSnooze>,
-    show_snoozed: bool,
+    batch: Batch,
     state: &mut State,
-) -> Result<bool> {
-    let result = connection.send_instructions(instructions)?;
-    let failures = validate_result(file_path, expected_result, result, state)?;
-    Ok(print_fail_or_ok(show_snoozed, failures))
+) -> Result<Failures> {
+    let result = connection.send_instructions(&batch.instructions)?;
+    validate_result(file_path, batch.expected_result, result, state)
 }
 
 fn parse_markdown(file_path: &Path) -> Result<Node> {
@@ -162,13 +164,10 @@ fn parse_markdown(file_path: &Path) -> Result<Node> {
         .map_err(|err| anyhow!("Error parsing markdown {err}"))
 }
 
-fn print_fail_or_ok(show_snoozed: bool, failures: Vec<(String, Snooze)>) -> bool {
+/// Prints the verdict of a file and returns whether it fails the run.
+pub fn print_fail_or_ok(show_snoozed: bool, failures: Failures) -> bool {
     if !failures.is_empty() {
-        if failures.iter().any(|(_, snoose)| snoose.should_snooze()) {
-            println!("SNOOZED");
-        } else {
-            println!("FAIL");
-        }
+        println!("{}", failures_label(&failures));
         let mut fail = false;
         for (failure, snooze) in failures {
             let should_snooze = snooze.should_snooze();
@@ -190,9 +189,57 @@ fn print_fail_or_ok(show_snoozed: bool, failures: Vec<(String, Snooze)>) -> bool
     false
 }
 
+/// A file is only `SNOOZED` when every failure in it is snoozed. A single
+/// real failure makes it a `FAIL`, matching the exit code.
+fn failures_label(failures: &[(String, Snooze)]) -> &'static str {
+    if failures.iter().all(|(_, snooze)| snooze.should_snooze()) {
+        "SNOOZED"
+    } else {
+        "FAIL"
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+
+    fn active_snooze() -> Snooze {
+        Snooze::snooze(chrono::NaiveDate::from_ymd_opt(9999, 12, 31).unwrap())
+    }
+
+    fn expired_snooze() -> Snooze {
+        Snooze::snooze(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap())
+    }
+
+    #[test]
+    fn label_is_snoozed_only_when_every_failure_is_snoozed() {
+        assert_eq!(
+            "SNOOZED",
+            failures_label(&[("a".into(), active_snooze()), ("b".into(), active_snooze())])
+        );
+    }
+
+    #[test]
+    fn label_is_fail_when_a_real_failure_is_mixed_with_snoozed_ones() {
+        assert_eq!(
+            "FAIL",
+            failures_label(&[
+                ("a".into(), active_snooze()),
+                ("b".into(), Snooze::not_snooze())
+            ])
+        );
+        assert_eq!(
+            "FAIL",
+            failures_label(&[
+                ("a".into(), active_snooze()),
+                ("b".into(), expired_snooze())
+            ])
+        );
+        assert_eq!(
+            "FAIL",
+            failures_label(&[("a".into(), Snooze::not_snooze())])
+        );
+    }
     use crate::processor::markdown_commands::{Class, DecisionTableType, Position};
 
     #[test]

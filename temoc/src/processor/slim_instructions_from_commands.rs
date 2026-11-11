@@ -65,6 +65,58 @@ pub struct FilePlan {
     pub trailing: Batch,
 }
 
+/// What surrounds a file when a file hooks fixture is configured. Each part
+/// is sent by itself, so that `endFile` still runs after a file that stopped
+/// early.
+pub struct FileHooks {
+    pub make: Batch,
+    pub begin: Batch,
+    pub end: Batch,
+}
+
+/// Builds the calls to the file hooks fixture `class` for `file`. Like the
+/// table lifecycle methods, `beginFile` and `endFile` are optional. They
+/// belong to no line of the file, so they are reported at line 0.
+pub fn file_hooks(class: &str, file: &str) -> FileHooks {
+    let position = Position::new(0, 0);
+    let instance = Ulid::new().to_string();
+    let mut plan = InstructionPlan::default();
+
+    let id = Id::new();
+    plan.instructions.push(Instruction::Make {
+        id: id.clone(),
+        instance: instance.clone(),
+        class: class.to_string(),
+        args: Vec::new(),
+    });
+    plan.expected_result.push((
+        ExpectedResult::ok(id, position.clone()),
+        Snooze::not_snooze(),
+    ));
+    let make = plan.take_batch();
+
+    let mut hook = |function: &str, args: Vec<SlimValue>| {
+        let method_name = MethodName(function.to_string(), position.clone());
+        plan.call(
+            &instance,
+            function.to_string(),
+            args,
+            &Snooze::not_snooze(),
+            |id| {
+                ExpectedResult::null_or_void_or_method_not_found(
+                    id,
+                    position.clone(),
+                    Some(method_name),
+                )
+            },
+        );
+        plan.take_batch()
+    };
+    let begin = hook("beginFile", vec![SlimValue::String(file.to_string())]);
+    let end = hook("endFile", Vec::new());
+    FileHooks { make, begin, end }
+}
+
 /// Splits the commands of a file into batches that are sent one at a time.
 pub fn get_file_plan(commands: Vec<MarkdownCommand>) -> FilePlan {
     let mut plan = InstructionPlan::default();

@@ -1,4 +1,4 @@
-use crate::app::{get_list_of_files, App};
+use crate::app::{get_list_of_files, App, Options};
 use crate::jsonl::JsonlOptions;
 use crate::processor::Filter;
 use crate::slim_server_connector::build_slim_server_connector;
@@ -56,6 +56,12 @@ struct Args {
     /// How to report results. `jsonl` prints one JSON object per line as the tests run. Default is text
     #[arg(long, value_enum)]
     output: Option<OutputFormat>,
+    /// Start the slim server once and use it for every file, instead of starting one for each file
+    #[arg(long)]
+    persistent_server: bool,
+    /// Fixture class whose `beginFile` and `endFile` methods are called around every file
+    #[arg(long, value_name = "CLASS")]
+    file_hooks: Option<String>,
     /// List of files to test. Append `:LINE` to select a decision table or a row
     files: Vec<PathBuf>,
 }
@@ -97,6 +103,8 @@ fn jsonl_options(args: Args) -> Result<JsonlOptions> {
         recursive: args.recursive,
         extension: args.extension.unwrap_or("md".to_string()).to_lowercase(),
         filter,
+        persistent_server: args.persistent_server,
+        file_hooks: args.file_hooks,
         paths: args.files,
     })
 }
@@ -113,17 +121,21 @@ fn run_text(args: Args) -> Result<()> {
     }
 
     if App::new(
-        args.show_snoozed,
+        Options {
+            show_snoozed: args.show_snoozed,
+            recursive: args.recursive,
+            extension: args.extension.unwrap_or("md".to_string()).to_lowercase(),
+            filter,
+            persistent_server: args.persistent_server,
+            file_hooks: args.file_hooks,
+            paths: args.files,
+        },
         build_slim_server_connector(
             command,
             args.port.unwrap_or(8085),
             args.pool_size.unwrap_or(20),
             args.pipe_output,
         ),
-        args.recursive,
-        filter,
-        args.extension.unwrap_or("md".to_string()).to_lowercase(),
-        args.files,
     )
     .run()?
     {
@@ -200,6 +212,19 @@ fn append_config_to_args(mut args: Args) -> Result<Args> {
                     "pipe_output",
                     "Expect the verbose to be a boolean",
                 )?;
+            args.persistent_server = args.persistent_server
+                || config_bool(
+                    &config_file,
+                    "persistent_server",
+                    "Expect the persistent_server to be a boolean",
+                )?;
+            if args.file_hooks.is_none() {
+                args.file_hooks = config_str(
+                    &config_file,
+                    "file_hooks",
+                    "Expect the file_hooks to be a string",
+                )?;
+            }
             if args.execute_server_command.is_none() {
                 args.execute_server_command = config_str(
                     &config_file,
