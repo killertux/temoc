@@ -117,7 +117,7 @@ The hooks belong to no line of the file, so failures are reported at line 0: `in
 With `--output jsonl`, or `output = "jsonl"` in the configuration file, Temoc prints one JSON object per line while the tests run. Tools can use it to show each row as it finishes. The default is `--output text`.
 
 ```jsonl
-{"type":"run_started","schema":1,"temoc_version":"0.10.0"}
+{"type":"run_started","schema":1,"temoc_version":"0.11.0"}
 {"type":"file_started","file":"a.md","tables":[{"line":7,"class":"Calculator","columns":["a","b","sum?"],"rows":[11],"snoozed_until":null}]}
 {"type":"table_started","file":"a.md","line":7}
 {"type":"row_started","file":"a.md","table":7,"line":11}
