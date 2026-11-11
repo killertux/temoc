@@ -164,11 +164,7 @@ fn parse_markdown(file_path: &Path) -> Result<Node> {
 
 fn print_fail_or_ok(show_snoozed: bool, failures: Vec<(String, Snooze)>) -> bool {
     if !failures.is_empty() {
-        if failures.iter().any(|(_, snoose)| snoose.should_snooze()) {
-            println!("SNOOZED");
-        } else {
-            println!("FAIL");
-        }
+        println!("{}", failures_label(&failures));
         let mut fail = false;
         for (failure, snooze) in failures {
             let should_snooze = snooze.should_snooze();
@@ -190,9 +186,57 @@ fn print_fail_or_ok(show_snoozed: bool, failures: Vec<(String, Snooze)>) -> bool
     false
 }
 
+/// A file is only `SNOOZED` when every failure in it is snoozed. A single
+/// real failure makes it a `FAIL`, matching the exit code.
+fn failures_label(failures: &[(String, Snooze)]) -> &'static str {
+    if failures.iter().all(|(_, snooze)| snooze.should_snooze()) {
+        "SNOOZED"
+    } else {
+        "FAIL"
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+
+    fn active_snooze() -> Snooze {
+        Snooze::snooze(chrono::NaiveDate::from_ymd_opt(9999, 12, 31).unwrap())
+    }
+
+    fn expired_snooze() -> Snooze {
+        Snooze::snooze(chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap())
+    }
+
+    #[test]
+    fn label_is_snoozed_only_when_every_failure_is_snoozed() {
+        assert_eq!(
+            "SNOOZED",
+            failures_label(&[("a".into(), active_snooze()), ("b".into(), active_snooze())])
+        );
+    }
+
+    #[test]
+    fn label_is_fail_when_a_real_failure_is_mixed_with_snoozed_ones() {
+        assert_eq!(
+            "FAIL",
+            failures_label(&[
+                ("a".into(), active_snooze()),
+                ("b".into(), Snooze::not_snooze())
+            ])
+        );
+        assert_eq!(
+            "FAIL",
+            failures_label(&[
+                ("a".into(), active_snooze()),
+                ("b".into(), expired_snooze())
+            ])
+        );
+        assert_eq!(
+            "FAIL",
+            failures_label(&[("a".into(), Snooze::not_snooze())])
+        );
+    }
     use crate::processor::markdown_commands::{Class, DecisionTableType, Position};
 
     #[test]
