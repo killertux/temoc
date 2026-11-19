@@ -62,6 +62,79 @@ Testing file temoc/examples/calculator_2.md...SNOOZED
 
 To run part of a file, add a line number to its path. The line of a `decisionTable` directive runs that table, and the line of a table row runs only that row, together with the table's `Make`, `beginTable` and `endTable`. A row run alone can't see symbols set by other rows.
 
+## Directives
+
+Temoc reads its instructions from link reference definitions, which render as nothing. Both `[//]: # (...)` and `[//]: # "..."` work.
+
+| Directive | Effect |
+| --------- | ------ |
+| `import <path>` | Adds a path to the fixture search path of the server. |
+| `decisionTable <Class>` | Runs the table that follows against the fixture `<Class>`. `<Class>#<method>` calls one method for each row, and `-- snooze until YYYY-MM-DD` at the end keeps its failures from failing the run through that date. |
+| `server <name>` | Runs everything after it in the file on the [named server](#several-servers). |
+
+## Several servers
+
+One run can check a tree of pages against more than one fixture server, for a project whose behaviour lives in more than one system. The configuration file names each server, and one of them is the default:
+
+```toml
+test_dir = "docs/specification/"
+recursive = true
+
+[servers.server]
+default = true
+execute_server_command = "apps/server/fixture-server.sh"
+port = 1
+persistent_server = true
+file_hooks = "SpecHooks"
+
+[servers.machines]
+execute_server_command = "crates/machines/fixture-server.sh"
+port = 1
+```
+
+- A server has `execute_server_command`, `port`, `pool_size`, `persistent_server`, `file_hooks` and `pipe_output`. The settings of the run stay at the top level: `test_dir`, `recursive`, `extension`, `show_snoozed` and `output`.
+- Exactly one server is the default. A single server is the default without saying so. With several and no `default = true`, Temoc refuses to start.
+- A configuration with those keys at the top level and no `[servers.*]` still works. It is one server, called `default`. Having both is an error.
+- The command line flags `-x`, `-p`, `-l`, `--persistent-server`, `--file-hooks` and `-o` set the default server.
+
+A page says which server its tables use:
+
+```markdown
+[//]: # (server machines)
+[//]: # (decisionTable ClickBounds)
+
+| click at | sent to the machine? |
+| -------- | -------------------- |
+| 640, 400 | yes                  |
+```
+
+- `server <name>` selects the server of every table after it in the file, until the next `server` directive. A page can have tables for several servers.
+- A page with no `server` directive runs on the default server.
+- A name that isn't configured is an error at that line, and no table of the file runs.
+- An `import` goes to the server that is selected where it appears. It is not sent if the file runs no table on that server.
+- `file.md:LINE` runs the selected table or row on the server named above it.
+
+How the servers run:
+
+- A server starts when the first table needs it. A server that no table of the run uses never starts, so its command may need tools that the machine doesn't have.
+- A server that isn't [persistent](#persistent-server) starts at the first table of a file that uses it and stops at the end of that file.
+- [File hooks](#file-hooks) are called on each server that a file uses: `beginFile` just before the first table of the file on that server, and `endFile` at the end of the file. A failed `beginFile` only skips the tables of its server.
+- A server that fails to start, or whose connection is lost, fails the tables that need it with a message that names the server and its command. It isn't started again in that run. The tables of the other servers still run.
+- In `--output jsonl`, a control exception applies to the rest of the file on every server.
+- Each server keeps its own symbols. A `$NAME` cell in a table of another server than the one that ran `$NAME=` fails:
+
+  ```
+  Symbol `$ID` was set on server `server` and cannot be used on server `machines` in specs/page.md:42:7
+  ```
+
+`--server <name>` runs only the tables of that server. Repeat it, or separate names with commas, to select several. The tables of the other servers are skipped, not failed, and their servers never start. In text output, a file with no table left prints `NONE`. In JSONL output, the skipped tables are listed and their rows are `skipped`. It combines with `-f` and with `file.md:LINE`.
+
+```sh
+temoc -c Config.toml --server machines
+```
+
+In text output, the failures of a file that uses several servers end with the server, as in `... for method call lateFee on server machines`. With several servers configured, each line of piped server output (`-o`) starts with the server, as in `[machines] ready`.
+
 ## Persistent server
 
 By default Temoc starts the slim server once for each file, so that every file begins with a clean process. When starting the server is expensive, `--persistent-server`, or `persistent_server = true` in the configuration file, starts it once and uses it for every file. The server starts when the first file with something to run needs it, and gets its `bye` when the run ends.
@@ -74,13 +147,13 @@ This is plain Slim: instruction lists repeat on one connection until `bye`. What
 
 Use [file hooks](#file-hooks) to put the server back into a known state between files.
 
-If the connection is lost or the server dies, the run stops, as it does without this option.
+If the connection is lost or the server dies, the run stops, as it does without this option. With [several servers](#several-servers) the run goes on, and only the tables of that server fail.
 
 ## File hooks
 
 > This is a Temoc extension. It is not part of FitNesse or of the Slim protocol, although it only uses standard Slim instructions, so it works with any Slim server.
 
-`--file-hooks <Class>`, or `file_hooks = "Class"` in the configuration file, names a fixture that Temoc calls around every file that has something to run:
+`--file-hooks <Class>`, or `file_hooks = "Class"` in the configuration file, names a fixture that Temoc calls around every file that has something to run. With [several servers](#several-servers), each server has its own `file_hooks`, called for the files that run a table on it:
 
 1. A new instance of the fixture is made, with no arguments.
 2. `beginFile(path)` is called, with the path of the file as it was given to Temoc.
@@ -121,12 +194,12 @@ The hooks belong to no line of the file, so failures are reported at line 0: `in
 With `--output jsonl`, or `output = "jsonl"` in the configuration file, Temoc prints one JSON object per line while the tests run. Tools can use it to show each row as it finishes. The default is `--output text`.
 
 ```jsonl
-{"type":"run_started","schema":1,"temoc_version":"0.11.0"}
-{"type":"file_started","file":"a.md","tables":[{"line":7,"class":"Calculator","columns":["a","b","sum?"],"rows":[11],"snoozed_until":null}]}
-{"type":"table_started","file":"a.md","line":7}
-{"type":"row_started","file":"a.md","table":7,"line":11}
-{"type":"row_finished","file":"a.md","table":7,"line":11,"status":"failed","duration_ms":2,"checks":[{"role":"setter","method":"setA","column":3,"status":"passed","value":"1"},{"role":"setter","method":"setB","column":7,"status":"passed","value":"2"},{"role":"getter","method":"sum","column":11,"status":"failed","expected":"4","actual":{"kind":"value","value":"3"}}]}
-{"type":"table_finished","file":"a.md","line":7,"status":"failed","duration_ms":3,"counts":{"failed":1}}
+{"type":"run_started","schema":1,"temoc_version":"0.12.0"}
+{"type":"file_started","file":"a.md","tables":[{"line":7,"class":"Calculator","server":"default","columns":["a","b","sum?"],"rows":[11],"snoozed_until":null}]}
+{"type":"table_started","file":"a.md","line":7,"server":"default"}
+{"type":"row_started","file":"a.md","table":7,"line":11,"server":"default"}
+{"type":"row_finished","file":"a.md","table":7,"line":11,"server":"default","status":"failed","duration_ms":2,"checks":[{"role":"setter","method":"setA","column":3,"status":"passed","value":"1"},{"role":"setter","method":"setB","column":7,"status":"passed","value":"2"},{"role":"getter","method":"sum","column":11,"status":"failed","expected":"4","actual":{"kind":"value","value":"3"}}]}
+{"type":"table_finished","file":"a.md","line":7,"server":"default","status":"failed","duration_ms":3,"counts":{"failed":1}}
 {"type":"file_finished","file":"a.md","status":"failed","duration_ms":9,"counts":{"failed":1}}
 {"type":"run_finished","status":"failed","exit_code":1,"duration_ms":40,"counts":{"failed":1}}
 ```
@@ -146,18 +219,20 @@ With `--output jsonl`, or `output = "jsonl"` in the configuration file, Temoc pr
 | Event | Fields |
 | ----- | ------ |
 | `run_started` | `schema`, `temoc_version` |
-| `file_started` | `file`, `tables`: a list with `line` (of the directive), `class`, `columns`, `rows` (their lines), `snoozed_until` |
-| `table_started` | `file`, `line`. Not sent for a table that never runs. |
-| `row_started` | `file`, `table`, `line`. Not sent for a row that never runs. |
-| `row_finished` | `file`, `table`, `line`, `status`, `duration_ms`, `checks`, and `message` if the connection was lost during the row |
-| `table_finished` | `file`, `line`, `status`, `duration_ms`, `counts` |
+| `file_started` | `file`, `tables`: a list with `line` (of the directive), `server`, `class`, `columns`, `rows` (their lines), `snoozed_until` |
+| `table_started` | `file`, `line`, `server`. Not sent for a table that never runs. |
+| `row_started` | `file`, `table`, `line`, `server`. Not sent for a row that never runs. |
+| `row_finished` | `file`, `table`, `line`, `server`, `status`, `duration_ms`, `checks`, and `message` if the connection was lost during the row or the server can't be used |
+| `table_finished` | `file`, `line`, `server`, `status`, `duration_ms`, `counts` |
 | `file_finished` | `file`, `status`, `duration_ms`, `counts` |
-| `setup_failed` | `file`, `line`, `phase`, `status`, `actual`, `snoozed_until` |
-| `run_error` | `kind`, `message`, `file`, `stderr` (the end of the server's stderr, if any) |
-| `output` | `stream` (`stdout` or `stderr`), `text`, and on a best effort basis `file`, `table`, `row`. Only with `-o`. |
+| `setup_failed` | `file`, `line`, `server`, `phase`, `status`, `actual`, `snoozed_until` |
+| `run_error` | `kind`, `message`, `file`, and for a problem with a server, `server` and `stderr` (the end of what it wrote to stderr, if any) |
+| `output` | `stream` (`stdout` or `stderr`), `text`, `server`, and on a best effort basis `file`, `table`, `row`. Only with `-o`. |
 | `run_finished` | `status`, `exit_code`, `duration_ms`, `counts` |
 
 `counts` has the number of rows for each status, leaving out zeros.
+
+`server` is the name of the [server](#several-servers) that the table runs on. It is `default` when the configuration doesn't name its server.
 
 ### Statuses
 
@@ -194,6 +269,7 @@ Each item of `checks` has `role`, `method`, `status`, and usually `column`.
 {"kind":"list","value":[{"kind":"value","value":"a"}]}
 {"kind":"exception","message":"boom","detail":"the full text from the server"}
 {"kind":"missing_symbol","symbol":"NOPE"}
+{"kind":"symbol_from_other_server","symbol":"ID","server":"server","message":"Symbol `$ID` was set on server `server` and cannot be used on server `machines` in a.md:42:7"}
 {"kind":"protocol_error","message":"Different ID in response"}
 ```
 
@@ -201,11 +277,13 @@ A `#method` row is compared cell by cell. If the server's answer isn't a list wi
 
 A setter cell that is exactly `$NAME`, for a symbol that isn't set, is a `missing_symbol` error and that row isn't sent. This is stricter than text output, which passes the text on to the fixture.
 
+A `$NAME` cell for a symbol that only another [server](#several-servers) has set is a `symbol_from_other_server` error, in which `server` is the one that set it. A row with such a setter cell isn't sent either.
+
 ### Failures outside a row
 
 `setup_failed` reports a failed `import`, `make`, `begin_table` or `end_table` as its `phase`. After a failed `make`, the rows of that table are `skipped`.
 
-With [file hooks](#file-hooks), the `phase` can also be `begin_file` or `end_file`, and a `make` can be the one of the hooks fixture. These three have `"line":0`, and after a failed `make` or `begin_file` every row of the file is `skipped`.
+With [file hooks](#file-hooks), the `phase` can also be `begin_file` or `end_file`, and a `make` can be the one of the hooks fixture. These three have `"line":0`, and after a failed `make` or `begin_file` every row of the file on that server is `skipped`.
 
 `run_error` reports problems with the run itself:
 
@@ -215,12 +293,14 @@ With [file hooks](#file-hooks), the `phase` can also be `begin_file` or `end_fil
 | `parse_error` | A markdown file couldn't be read as tests. | The next path runs. |
 | `file_error` | A path couldn't be read. | The next path runs. |
 | `bad_config` | The configuration is invalid. | Nothing runs. |
-| `server_start_failed` | The server didn't start. | The run stops. |
-| `server_died` | The connection to the server was lost. | The run stops. |
-| `protocol_error` | The server sent something that can't be understood. | The run stops. |
+| `server_start_failed` | The server didn't start. | The run stops, if it is the only server. |
+| `server_died` | The connection to the server was lost. | The run stops, if it is the only server. |
+| `protocol_error` | The server sent something that can't be understood. | The run stops, if it is the only server. |
 | `suite_aborted` | A fixture raised `ABORT_SLIM_SUITE`. | The run stops. |
 
 When the run stops, the rows that are left in the current file are `skipped`, and later files are not reported at all.
+
+With [several servers](#several-servers), losing one doesn't stop the run. It is reported once, and from then on every row that needs it is an `error` with the reason as its `message`. The rows left in the table that was running are `skipped`.
 
 ### Control exceptions
 
@@ -233,10 +313,10 @@ When the run stops, the rows that are left in the current file are `skipped`, an
 
 ### Batches
 
-Text output sends a whole file to the server in one batch. JSONL output sends one batch for `Import`, `Make` and `beginTable`, one for each row, and one for `endTable`, on the same connection. This is how the Slim protocol works: instruction lists repeat until `bye`, and FitNesse itself sends one list per table.
+Text output sends a whole file to the server in one batch, or one batch for each run of tables on the same server when the file uses [several](#several-servers). JSONL output sends one batch for `Import`, `Make` and `beginTable`, one for each row, and one for `endTable`, on the same connection. This is how the Slim protocol works: instruction lists repeat until `bye`, and FitNesse itself sends one list per table.
 
 In both formats, [file hooks](#file-hooks) add a batch for making the fixture, one for `beginFile` and one for `endFile`, and a [persistent server](#persistent-server) keeps the connection open from one file to the next.
 
 ### Cancelling
 
-On SIGTERM or SIGINT, Temoc stops sending, stops the server, reports the remaining rows as `skipped`, and ends with a `run_finished` with the status `cancelled`. The server runs in its own process group, so that Temoc can stop what it started: it gets SIGTERM, and SIGKILL after two seconds. Because of that, signal Temoc itself and let it stop the server.
+On SIGTERM or SIGINT, Temoc stops sending, stops every running server, reports the remaining rows as `skipped`, and ends with a `run_finished` with the status `cancelled`. Each server runs in its own process group, so that Temoc can stop what it started: it gets SIGTERM, and SIGKILL after two seconds. Because of that, signal Temoc itself and let it stop the server.

@@ -7,22 +7,27 @@ use std::process::{Child, Command, Stdio};
 use std::thread::{sleep, JoinHandle};
 use std::time::{Duration, Instant};
 
+/// `output_prefix` starts every line of server output that is piped. It
+/// tells the servers apart when there are several, and is empty otherwise.
 pub fn build_slim_server_connector(
     command: String,
     port: u16,
     pool_size: u16,
     pipe_output: bool,
+    output_prefix: String,
 ) -> Box<dyn SlimServerConnector> {
     if port == 1 {
         Box::new(StdoutSlimServerConnector {
             command,
             pipe_output,
+            output_prefix,
         })
     } else {
         Box::new(TcpSlimServerConnector {
             command,
             port: random_cycle_port(port, pool_size),
             pipe_output,
+            output_prefix,
         })
     }
 }
@@ -49,6 +54,7 @@ pub struct TcpSlimServerConnector {
     command: String,
     port: CyclePort,
     pipe_output: bool,
+    output_prefix: String,
 }
 
 fn spawn_server(
@@ -70,8 +76,16 @@ fn spawn_server(
 
 impl SlimServerConnector for TcpSlimServerConnector {
     fn start_and_connect(&mut self) -> Result<Box<dyn SlimServer>> {
-        let stdout = build_stdio(self.pipe_output);
-        let stderr = build_stdio(self.pipe_output);
+        // The output can only get a prefix if it goes through temoc.
+        let prefixed = self.pipe_output && !self.output_prefix.is_empty();
+        let stdio = || {
+            if prefixed {
+                Stdio::piped()
+            } else {
+                build_stdio(self.pipe_output)
+            }
+        };
+        let (stdout, stderr) = (stdio(), stdio());
         self.port.new_port();
         let mut child = spawn_server(
             &self.command,
@@ -95,7 +109,24 @@ impl SlimServerConnector for TcpSlimServerConnector {
             }
             sleep(sleep_time);
         };
-        Ok(Box::new(TcpSlimServer { child, stream }))
+        let mut output_threads = Vec::new();
+        if let Some(stdout) = child.stdout.take() {
+            let prefix = self.output_prefix.clone();
+            output_threads.push(std::thread::spawn(move || {
+                forward_lines(stdout, &prefix, io::stdout())
+            }));
+        }
+        if let Some(stderr) = child.stderr.take() {
+            let prefix = self.output_prefix.clone();
+            output_threads.push(std::thread::spawn(move || {
+                forward_lines(stderr, &prefix, io::stderr())
+            }));
+        }
+        Ok(Box::new(TcpSlimServer {
+            child,
+            stream,
+            output_threads,
+        }))
     }
 }
 
@@ -110,6 +141,7 @@ fn build_stdio(pipe_output: bool) -> Stdio {
 struct TcpSlimServer {
     child: Child,
     stream: TcpStream,
+    output_threads: Vec<JoinHandle<io::Result<()>>>,
 }
 
 impl SlimServer for TcpSlimServer {
@@ -123,13 +155,28 @@ impl SlimServer for TcpSlimServer {
 
     fn close(&mut self) -> Result<()> {
         self.child.wait()?;
+        for thread in self.output_threads.drain(..) {
+            thread
+                .join()
+                .map_err(|_| anyhow!("server output thread panicked"))??;
+        }
         Ok(())
     }
+}
+
+/// Copies the output of a server, line by line, with the prefix of that
+/// server in front of each one.
+fn forward_lines(reader: impl Read, prefix: &str, mut writer: impl Write) -> io::Result<()> {
+    for line in BufReader::new(reader).lines() {
+        writeln!(writer, "{prefix}{}", line?)?;
+    }
+    Ok(())
 }
 
 pub struct StdoutSlimServerConnector {
     command: String,
     pipe_output: bool,
+    output_prefix: String,
 }
 
 struct StdoutSlimServer {
@@ -151,8 +198,15 @@ impl SlimServerConnector for StdoutSlimServerConnector {
             .take()
             .ok_or(anyhow!("Failed to open stderr"))?;
         let pipe_output = self.pipe_output;
+        let prefix = self.output_prefix.clone();
         let stderr_thread = std::thread::spawn(move || {
-            drain_slim_stderr(child_stderr, pipe_output, io::stdout(), io::stderr())
+            drain_slim_stderr(
+                child_stderr,
+                pipe_output,
+                &prefix,
+                io::stdout(),
+                io::stderr(),
+            )
         });
 
         Ok(Box::new(StdoutSlimServer {
@@ -198,6 +252,7 @@ impl SlimServer for StdoutSlimServer {
 fn drain_slim_stderr<R, O, E>(
     reader: R,
     pipe_output: bool,
+    prefix: &str,
     mut stdout: O,
     mut stderr: E,
 ) -> io::Result<()>
@@ -215,14 +270,14 @@ where
             .strip_prefix("SOUT :")
             .or_else(|| line.strip_prefix("SOUT.:"))
         {
-            writeln!(stdout, "{line}")?;
+            writeln!(stdout, "{prefix}{line}")?;
         } else if let Some(line) = line
             .strip_prefix("SERR :")
             .or_else(|| line.strip_prefix("SERR.:"))
         {
-            writeln!(stderr, "{line}")?;
+            writeln!(stderr, "{prefix}{line}")?;
         } else {
-            writeln!(stdout, "{line}")?;
+            writeln!(stdout, "{prefix}{line}")?;
         }
     }
     Ok(())
@@ -230,7 +285,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{build_slim_server_connector, drain_slim_stderr};
+    use super::{build_slim_server_connector, drain_slim_stderr, forward_lines};
     use std::io::Cursor;
 
     #[test]
@@ -239,10 +294,32 @@ mod tests {
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
 
-        drain_slim_stderr(Cursor::new(input), true, &mut stdout, &mut stderr).unwrap();
+        drain_slim_stderr(Cursor::new(input), true, "", &mut stdout, &mut stderr).unwrap();
 
         assert_eq!(b"one\ntwo\nplain\n", stdout.as_slice());
         assert_eq!(b"bad\nworse\n", stderr.as_slice());
+    }
+
+    #[test]
+    fn piped_lines_start_with_the_prefix_of_their_server() {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        drain_slim_stderr(
+            Cursor::new(b"SOUT :one\nSERR :bad\nplain\n"),
+            true,
+            "[machines] ",
+            &mut stdout,
+            &mut stderr,
+        )
+        .unwrap();
+
+        assert_eq!(b"[machines] one\n[machines] plain\n", stdout.as_slice());
+        assert_eq!(b"[machines] bad\n", stderr.as_slice());
+
+        let mut copied = Vec::new();
+        forward_lines(Cursor::new(b"a\nb\n"), "[machines] ", &mut copied).unwrap();
+        assert_eq!(b"[machines] a\n[machines] b\n", copied.as_slice());
     }
 
     #[test]
@@ -253,6 +330,7 @@ mod tests {
         drain_slim_stderr(
             Cursor::new(b"SOUT :ignored\nSERR :ignored\n"),
             false,
+            "",
             &mut stdout,
             &mut stderr,
         )
@@ -264,6 +342,6 @@ mod tests {
 
     #[test]
     fn tcp_connector_accepts_a_single_port_pool() {
-        let _connector = build_slim_server_connector("false".into(), 8085, 1, false);
+        let _connector = build_slim_server_connector("false".into(), 8085, 1, false, String::new());
     }
 }

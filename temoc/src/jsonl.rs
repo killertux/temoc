@@ -2,53 +2,23 @@
 
 use crate::app::{get_list_of_files, has_extension, split_selector};
 use crate::cancel::{cancel_on_signals, ServerControl};
-use crate::captured_server::{CapturedServer, CapturedServerConnector, ServerLog};
 use crate::events::{Counts, Event, EventSink, RunErrorKind, Status, SCHEMA_VERSION};
 use crate::processor::stream::{file_started, FileRunner, Halt};
-use crate::processor::{file_hooks, load_file_plan, slim_plan::FilePlan, Filter};
+use crate::processor::{load_file_plan, slim_plan::FilePlan, Filter};
+use crate::server_pool::ServerPool;
+use crate::servers::Servers;
 use anyhow::Result;
-use slim_protocol::SlimConnection;
 use std::fs::metadata;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-
-/// How long a server gets to exit by itself after `bye`.
-const BYE_GRACE: Duration = Duration::from_secs(5);
+use std::time::Instant;
 
 pub struct JsonlOptions {
-    pub command: String,
-    pub port: u16,
-    pub pool_size: u16,
-    pub pipe_output: bool,
+    pub servers: Servers,
     pub recursive: bool,
     pub extension: String,
     pub filter: Filter,
-    /// Keeps one server for the whole run, instead of one for each file.
-    pub persistent_server: bool,
-    /// The fixture whose `beginFile` and `endFile` surround every file.
-    pub file_hooks: Option<String>,
     pub paths: Vec<PathBuf>,
-}
-
-/// A running server and the connection to it.
-struct Session {
-    server: CapturedServer,
-    connection: SlimConnection<Box<dyn Read>, Box<dyn Write>>,
-}
-
-impl Session {
-    /// Says `bye` and lets the server exit by itself.
-    fn close(self) {
-        let _ = self.connection.close();
-        self.server.stop_within(BYE_GRACE);
-    }
-
-    fn stop_now(self) -> Option<std::process::ExitStatus> {
-        drop(self.connection);
-        self.server.stop_now()
-    }
 }
 
 /// Runs everything and returns the exit code.
@@ -75,6 +45,7 @@ pub fn run(options: Result<JsonlOptions>) -> i32 {
                 kind: RunErrorKind::BadConfig,
                 message: format!("{error:#}"),
                 file: None,
+                server: None,
                 stderr: None,
             });
             status = Status::Error;
@@ -102,15 +73,12 @@ pub fn run(options: Result<JsonlOptions>) -> i32 {
 
 struct JsonlRun<'a> {
     options: JsonlOptions,
-    connector: CapturedServerConnector,
-    log: Arc<ServerLog>,
+    pool: ServerPool,
     events: &'a EventSink,
     control: &'a ServerControl,
     status: Status,
     counts: Counts,
     stopped: bool,
-    /// The server that is kept between files, with `persistent_server`.
-    session: Option<Session>,
 }
 
 impl<'a> JsonlRun<'a> {
@@ -119,24 +87,14 @@ impl<'a> JsonlRun<'a> {
         events: &'a Arc<EventSink>,
         control: &'a Arc<ServerControl>,
     ) -> Self {
-        let log = Arc::new(ServerLog::new(Arc::clone(events), options.pipe_output));
-        let connector = CapturedServerConnector::new(
-            options.command.clone(),
-            options.port,
-            options.pool_size,
-            Arc::clone(&log),
-            Arc::clone(control),
-        );
         Self {
+            pool: ServerPool::new(&options.servers, events, control),
             options,
-            connector,
-            log,
             events,
             control,
             status: Status::Passed,
             counts: Counts::default(),
             stopped: false,
-            session: None,
         }
     }
 
@@ -144,14 +102,7 @@ impl<'a> JsonlRun<'a> {
         for path in self.options.paths.clone() {
             self.process_path(&path);
         }
-        if let Some(session) = self.session.take() {
-            self.log.set_location(None, None, None);
-            if self.control.is_cancelled() {
-                session.stop_now();
-            } else {
-                session.close();
-            }
-        }
+        self.pool.finish();
     }
 
     fn process_path(&mut self, path: &Path) {
@@ -191,7 +142,7 @@ impl<'a> JsonlRun<'a> {
         if let Some(line) = line {
             filter = filter.line(line);
         }
-        match load_file_plan(path, &filter) {
+        match load_file_plan(path, &filter, &self.options.servers) {
             Err(error) => self.run_error(
                 RunErrorKind::ParseError,
                 format!("{error:#}"),
@@ -216,112 +167,39 @@ impl<'a> JsonlRun<'a> {
 
     fn run_plan(&mut self, file: &str, plan: FilePlan) {
         let started = Instant::now();
-        self.events.emit(&file_started(file, &plan));
-        self.log.set_location(Some(file), None, None);
-        self.log.take_stderr();
-        let events = self.events;
-        let control = self.control;
-        let log = Arc::clone(&self.log);
-        let mut runner = FileRunner::new(file, events, &log, control);
+        self.events.emit(&file_started(file, &plan, &self.pool));
+        self.pool.set_location(Some(file), None, None);
+        self.pool.forget_stderr();
 
-        let halt = self.execute(&mut runner, plan);
-        if matches!(halt, Some(Halt::Connection { .. })) {
-            runner.mark_error();
-        }
-        self.status = self.status.worst(runner.status());
-        self.counts.merge(runner.counts());
-        events.emit(&Event::FileFinished {
+        let mut runner = FileRunner::new(file, self.events, self.control, &mut self.pool);
+        let halt = runner.run(plan);
+        let (status, counts) = (runner.status(), runner.counts());
+        let problems = runner.take_problems();
+        self.pool.finish_file();
+
+        self.status = self.status.worst(status);
+        self.counts.merge(counts);
+        self.events.emit(&Event::FileFinished {
             file: file.to_string(),
-            status: runner.status(),
+            status,
             duration_ms: started.elapsed().as_millis(),
-            counts: runner.counts(),
+            counts,
         });
-
-        match halt {
-            Some(Halt::Connection { kind, message }) => {
-                self.run_error(kind, message, Some(file.to_string()));
-                self.stopped = true;
-            }
-            Some(Halt::Suite(message)) => {
-                self.run_error(RunErrorKind::SuiteAborted, message, Some(file.to_string()));
-                self.stopped = true;
-            }
-            Some(Halt::Cancelled) => self.stopped = true,
-            Some(Halt::File | Halt::Table) | None => {}
+        for problem in problems {
+            self.status = self.status.worst(Status::Error);
+            self.events.emit(&Event::RunError {
+                kind: problem.kind,
+                message: problem.message,
+                file: Some(file.to_string()),
+                server: Some(problem.server),
+                stderr: problem.stderr,
+            });
         }
-    }
-
-    fn execute(&mut self, runner: &mut FileRunner<'_>, plan: FilePlan) -> Option<Halt> {
-        let mut session = match self.session.take() {
-            Some(session) => session,
-            None => match self.connect() {
-                Ok(session) => session,
-                Err(halt) => {
-                    runner.skip(plan);
-                    return Some(halt);
-                }
-            },
-        };
-        let hooks = self
-            .options
-            .file_hooks
-            .as_ref()
-            .map(|class| file_hooks(class, runner.file()));
-
-        let halt = runner.run(&mut session.connection, plan, hooks);
-        match halt {
-            Some(Halt::Connection { kind, message }) => {
-                let kind = if session.server.has_exited() {
-                    RunErrorKind::ServerDied
-                } else {
-                    kind
-                };
-                let status = session.stop_now();
-                Some(Halt::Connection {
-                    kind,
-                    message: with_exit_status(message, status),
-                })
-            }
-            Some(Halt::Cancelled) => {
-                session.stop_now();
-                Some(Halt::Cancelled)
-            }
-            halt => {
-                if self.options.persistent_server {
-                    self.session = Some(session);
-                } else {
-                    session.close();
-                }
-                halt
-            }
-        }
-    }
-
-    fn connect(&mut self) -> Result<Session, Halt> {
-        let mut server = match self.connector.start() {
-            Ok(server) => server,
-            Err(error) => return Err(self.start_failed(format!("{error:#}"))),
-        };
-        let connection = server.reader().and_then(|reader| {
-            let writer = server.writer()?;
-            Ok(SlimConnection::new(reader, writer)?)
-        });
-        match connection {
-            Ok(connection) => Ok(Session { server, connection }),
-            Err(error) => {
-                let status = server.stop_now();
-                Err(self.start_failed(with_exit_status(format!("{error:#}"), status)))
-            }
-        }
-    }
-
-    fn start_failed(&self, message: String) -> Halt {
-        if self.control.is_cancelled() {
-            return Halt::Cancelled;
-        }
-        Halt::Connection {
-            kind: RunErrorKind::ServerStartFailed,
-            message,
+        if matches!(
+            halt,
+            Some(Halt::Connection { .. } | Halt::Suite(_) | Halt::Cancelled)
+        ) {
+            self.stopped = true;
         }
     }
 
@@ -334,20 +212,15 @@ impl<'a> JsonlRun<'a> {
         );
     }
 
+    /// Reports a problem that no server is part of.
     fn run_error(&mut self, kind: RunErrorKind, message: String, file: Option<String>) {
         self.status = self.status.worst(Status::Error);
         self.events.emit(&Event::RunError {
             kind,
             message,
             file,
-            stderr: self.log.take_stderr(),
+            server: None,
+            stderr: None,
         });
-    }
-}
-
-fn with_exit_status(message: String, status: Option<std::process::ExitStatus>) -> String {
-    match status {
-        Some(status) => format!("{message} (server {status})"),
-        None => message,
     }
 }

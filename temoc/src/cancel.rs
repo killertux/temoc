@@ -9,12 +9,12 @@ use std::time::Duration;
 /// How long a server gets to exit on SIGTERM before it gets SIGKILL.
 pub const TERMINATE_GRACE: Duration = Duration::from_secs(2);
 
-/// Tracks whether the run was cancelled and which server process group is
+/// Tracks whether the run was cancelled and which server process groups are
 /// running, so that a signal can unblock a runner waiting on a slow fixture.
 #[derive(Default)]
 pub struct ServerControl {
     cancelled: AtomicBool,
-    process_group: Mutex<Option<i32>>,
+    process_groups: Mutex<Vec<i32>>,
 }
 
 impl ServerControl {
@@ -22,37 +22,43 @@ impl ServerControl {
         self.cancelled.load(Ordering::SeqCst)
     }
 
-    /// Stops the run and asks the current server to exit.
+    /// Stops the run and asks the running servers to exit.
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
         self.signal(libc::SIGTERM);
     }
 
     pub fn attach(&self, process_group: i32) {
-        *self.lock() = Some(process_group);
+        self.lock().push(process_group);
         if self.is_cancelled() {
-            self.signal(libc::SIGTERM);
+            signal_group(process_group, libc::SIGTERM);
         }
     }
 
-    pub fn detach(&self) {
-        *self.lock() = None;
+    pub fn detach(&self, process_group: i32) {
+        self.lock().retain(|attached| *attached != process_group);
     }
 
+    /// Signals every running server.
     pub fn signal(&self, signal: i32) {
-        if let Some(process_group) = *self.lock() {
-            // SAFETY: killpg takes no pointers. An error only means that the
-            // process group has already gone.
-            unsafe {
-                libc::killpg(process_group, signal);
-            }
+        for process_group in self.lock().iter() {
+            signal_group(*process_group, signal);
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Option<i32>> {
-        self.process_group
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<i32>> {
+        self.process_groups
             .lock()
             .expect("server control lock poisoned")
+    }
+}
+
+/// Signals one server and everything it started.
+pub fn signal_group(process_group: i32, signal: i32) {
+    // SAFETY: killpg takes no pointers. An error only means that the process
+    // group has already gone.
+    unsafe {
+        libc::killpg(process_group, signal);
     }
 }
 

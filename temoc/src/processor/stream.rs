@@ -1,20 +1,19 @@
 //! Runs a file one batch at a time and reports every result as it arrives.
 
-use super::markdown_commands::Snooze;
+use super::markdown_commands::{Position, Snooze};
 use super::slim_instructions_from_commands::{
-    Batch, ExpectedResult, ExpectedResultValue, FileHooks, FilePlan, MethodCell, RowPlan, TablePlan,
+    file_hooks, Batch, ExpectedResult, ExpectedResultValue, FilePlan, MethodCell, RowPlan,
+    TablePlan,
 };
-use super::State;
+use super::{foreign_symbol_message, symbol_name, State};
 use crate::cancel::ServerControl;
-use crate::captured_server::ServerLog;
 use crate::events::{
     Actual, Check, Counts, Event, EventSink, Phase, Role, RunErrorKind, Status, TableSummary,
 };
+use crate::server_pool::{ServerFailure, ServerPool, Unavailable};
 use slim_protocol::{
-    Instruction, InstructionResult, InstructionResultValue, SendInstructionsError, SlimConnection,
-    SlimValue,
+    Instruction, InstructionResult, InstructionResultValue, SendInstructionsError, SlimValue,
 };
-use std::io::{Read, Write};
 use std::time::Instant;
 
 /// Why the instructions after some point were not sent.
@@ -117,7 +116,7 @@ impl Tally {
     }
 }
 
-pub fn file_started(file: &str, plan: &FilePlan) -> Event {
+pub fn file_started(file: &str, plan: &FilePlan, pool: &ServerPool) -> Event {
     Event::FileStarted {
         file: file.to_string(),
         tables: plan
@@ -125,6 +124,7 @@ pub fn file_started(file: &str, plan: &FilePlan) -> Event {
             .iter()
             .map(|table| TableSummary {
                 line: table.line,
+                server: pool.name(table.server).to_string(),
                 class: table.class.clone(),
                 columns: table.columns.clone(),
                 rows: table.rows.iter().map(|row| row.line).collect(),
@@ -134,34 +134,49 @@ pub fn file_started(file: &str, plan: &FilePlan) -> Event {
     }
 }
 
+/// How a file stands with a server it uses.
+enum Standing {
+    Ready,
+    /// Its file hooks failed, so its tables are skipped.
+    Blocked,
+    /// It can't be used, so its tables fail with this message.
+    Gone(String),
+}
+
+/// A server that a file has used.
+struct Use {
+    server: usize,
+    standing: Standing,
+    /// The `endFile` to call, once the hooks fixture was made.
+    end: Option<Batch>,
+}
+
 pub struct FileRunner<'a> {
     file: &'a str,
     events: &'a EventSink,
-    log: &'a ServerLog,
     control: &'a ServerControl,
+    pool: &'a mut ServerPool,
     state: State,
     tally: Tally,
+    problems: Vec<ServerFailure>,
 }
 
 impl<'a> FileRunner<'a> {
     pub fn new(
         file: &'a str,
         events: &'a EventSink,
-        log: &'a ServerLog,
         control: &'a ServerControl,
+        pool: &'a mut ServerPool,
     ) -> Self {
         Self {
             file,
             events,
-            log,
             control,
+            pool,
             state: State::default(),
             tally: Tally::default(),
+            problems: Vec::new(),
         }
-    }
-
-    pub fn file(&self) -> &str {
-        self.file
     }
 
     pub fn status(&self) -> Status {
@@ -172,114 +187,192 @@ impl<'a> FileRunner<'a> {
         self.tally.counts
     }
 
-    pub fn mark_error(&mut self) {
-        self.tally.add_status(Status::Error);
+    /// The servers that were lost and the suite aborts, to report after the
+    /// file.
+    pub fn take_problems(&mut self) -> Vec<ServerFailure> {
+        std::mem::take(&mut self.problems)
     }
 
-    /// Reports every row as skipped when the server never came up.
-    pub fn skip(&mut self, plan: FilePlan) {
-        for table in plan.tables {
-            self.skip_table(table);
-        }
-    }
-
-    /// Runs a file between its hooks, if there are any. The tables don't run
-    /// when the hooks fixture can't be made or `beginFile` fails, and
-    /// `endFile` runs whenever the fixture was made and the server still
-    /// answers.
-    pub fn run<R: Read, W: Write>(
-        &mut self,
-        connection: &mut SlimConnection<R, W>,
-        plan: FilePlan,
-        hooks: Option<FileHooks>,
-    ) -> Option<Halt> {
-        let Some(hooks) = hooks else {
-            return self.run_tables(connection, plan);
-        };
-        let (made, halt) = self.run_hook(connection, hooks.make);
-        if !made || halt.is_some() {
-            self.skip(plan);
-            return halt;
-        }
-        let (began, mut halt) = self.run_hook(connection, hooks.begin);
-        if began && halt.is_none() {
-            halt = self.run_tables(connection, plan);
-        } else {
-            self.skip(plan);
-        }
-        if matches!(halt, Some(Halt::Cancelled | Halt::Connection { .. })) {
-            return halt;
-        }
-        let (_, end_halt) = self.run_hook(connection, hooks.end);
-        // A file that already stopped the run keeps its reason.
-        match halt {
-            Some(Halt::Suite(_)) => halt,
-            _ => end_halt.or(halt),
-        }
-    }
-
-    /// Runs one part of the file hooks. Returns whether it passed, and why to
-    /// stop, if that's the case.
-    fn run_hook<R: Read, W: Write>(
-        &mut self,
-        connection: &mut SlimConnection<R, W>,
-        batch: Batch,
-    ) -> (bool, Option<Halt>) {
-        self.log.set_location(Some(self.file), None, None);
-        let mut tally = Tally::default();
-        let (_, halt) = self.run_lifecycle(connection, batch, &mut tally);
-        self.tally.merge(&tally);
-        (tally.status() == Status::Passed, halt)
-    }
-
-    fn run_tables<R: Read, W: Write>(
-        &mut self,
-        connection: &mut SlimConnection<R, W>,
-        plan: FilePlan,
-    ) -> Option<Halt> {
+    /// Runs the tables of a file, each on its server. A server starts at the
+    /// first table that needs it, which is also when its file hooks begin:
+    /// the tables of a server don't run when its hooks fixture can't be made
+    /// or `beginFile` fails, and `endFile` runs whenever the fixture was made
+    /// and the server still answers.
+    pub fn run(&mut self, plan: FilePlan) -> Option<Halt> {
+        let mut uses: Vec<Use> = Vec::new();
         let mut halt = None;
         for table in plan.tables {
-            if halt.is_some() {
+            if !table.selected || halt.is_some() {
                 self.skip_table(table);
-            } else {
-                halt = self.run_table(connection, table);
+                continue;
+            }
+            let server = table.server;
+            let index = match uses.iter().position(|used| used.server == server) {
+                Some(index) => index,
+                None => {
+                    let (used, enter_halt) = self.enter(server);
+                    halt = enter_halt;
+                    uses.push(used);
+                    uses.len() - 1
+                }
+            };
+            match &uses[index].standing {
+                _ if halt.is_some() => self.skip_table(table),
+                Standing::Blocked => self.skip_table(table),
+                Standing::Gone(message) => self.fail_table(table, message),
+                Standing::Ready => {
+                    let table_halt = self.run_table(table);
+                    halt = self.settle(server, table_halt);
+                    if let Some(message) = self.pool.gone(server) {
+                        uses[index].standing = Standing::Gone(message.to_string());
+                    }
+                }
             }
         }
-        if halt.is_none() {
+        for (server, batch) in plan.trailing {
+            let ready = uses
+                .iter()
+                .any(|used| used.server == server && matches!(used.standing, Standing::Ready));
+            if halt.is_some() || !ready {
+                continue;
+            }
             let mut tally = Tally::default();
-            halt = self.run_lifecycle(connection, plan.trailing, &mut tally).1;
+            let (_, trailing_halt) = self.run_lifecycle(server, batch, &mut tally);
             self.tally.merge(&tally);
+            halt = self.settle(server, trailing_halt);
+        }
+        for used in uses {
+            let Some(end) = used.end else {
+                continue;
+            };
+            if self.control.is_cancelled() || !self.pool.is_running(used.server) {
+                continue;
+            }
+            let (_, end_halt) = self.run_hook(used.server, end);
+            let end_halt = self.settle(used.server, end_halt);
+            // A file that already stopped the run keeps its reason.
+            halt = match halt {
+                Some(Halt::Suite(_) | Halt::Cancelled | Halt::Connection { .. }) => halt,
+                _ => end_halt.or(halt),
+            };
         }
         halt
     }
 
-    fn run_table<R: Read, W: Write>(
-        &mut self,
-        connection: &mut SlimConnection<R, W>,
-        table: TablePlan,
-    ) -> Option<Halt> {
+    /// Starts using a server in this file: starts it if it isn't running,
+    /// and begins its file hooks if it has any.
+    fn enter(&mut self, server: usize) -> (Use, Option<Halt>) {
+        let mut used = Use {
+            server,
+            standing: Standing::Ready,
+            end: None,
+        };
+        match self.pool.start(server) {
+            Ok(()) => {}
+            Err(Unavailable::Cancelled) => {
+                used.standing = Standing::Blocked;
+                return (used, Some(Halt::Cancelled));
+            }
+            Err(Unavailable::Gone(message)) => {
+                used.standing = Standing::Gone(message);
+                return (used, None);
+            }
+            Err(Unavailable::Failed(failure)) => {
+                used.standing = Standing::Gone(failure.message.clone());
+                let halt = self.report(failure);
+                return (used, halt);
+            }
+        }
+        let Some(class) = self.pool.file_hooks(server).map(str::to_string) else {
+            return (used, None);
+        };
+        let hooks = file_hooks(&class, self.file);
+        let (made, make_halt) = self.run_hook(server, hooks.make);
+        let mut halt = self.settle(server, make_halt);
+        if made && halt.is_none() {
+            used.end = Some(hooks.end);
+            let (began, begin_halt) = self.run_hook(server, hooks.begin);
+            halt = self.settle(server, begin_halt);
+            if !began {
+                used.standing = Standing::Blocked;
+            }
+        } else {
+            used.standing = Standing::Blocked;
+        }
+        if let Some(message) = self.pool.gone(server) {
+            used.standing = Standing::Gone(message.to_string());
+        }
+        (used, halt)
+    }
+
+    /// Decides what a stop means for the rest of the file. A lost connection
+    /// only ends the tables of its server, unless there is no other server.
+    fn settle(&mut self, server: usize, halt: Option<Halt>) -> Option<Halt> {
+        match halt {
+            Some(Halt::Connection { kind, message }) => {
+                let failure = self.pool.lost(server, kind, message);
+                self.report(failure)
+            }
+            Some(Halt::Suite(message)) => {
+                self.problems.push(ServerFailure {
+                    kind: RunErrorKind::SuiteAborted,
+                    message: message.clone(),
+                    server: self.pool.name(server).to_string(),
+                    stderr: self.pool.take_stderr(server),
+                });
+                Some(Halt::Suite(message))
+            }
+            halt => halt,
+        }
+    }
+
+    /// Records a server that can't be used anymore. With no other server,
+    /// that stops the run.
+    fn report(&mut self, failure: ServerFailure) -> Option<Halt> {
+        let halt = self.pool.is_single().then(|| Halt::Connection {
+            kind: failure.kind,
+            message: failure.message.clone(),
+        });
+        self.tally.add_status(Status::Error);
+        self.problems.push(failure);
+        halt
+    }
+
+    /// Runs one part of the file hooks. Returns whether it passed, and why to
+    /// stop, if that's the case.
+    fn run_hook(&mut self, server: usize, batch: Batch) -> (bool, Option<Halt>) {
+        self.pool.set_location(Some(self.file), None, None);
+        let mut tally = Tally::default();
+        let (_, halt) = self.run_lifecycle(server, batch, &mut tally);
+        self.tally.merge(&tally);
+        (tally.status() == Status::Passed, halt)
+    }
+
+    fn run_table(&mut self, table: TablePlan) -> Option<Halt> {
         let started = Instant::now();
         let line = table.line;
+        let server = table.server;
         self.events.emit(&Event::TableStarted {
             file: self.file.to_string(),
             line,
+            server: self.pool.name(server).to_string(),
         });
-        self.log.set_location(Some(self.file), Some(line), None);
+        self.pool.set_location(Some(self.file), Some(line), None);
         let mut tally = Tally::default();
 
-        let (make_failed, mut halt) = self.run_lifecycle(connection, table.setup, &mut tally);
+        let (make_failed, mut halt) = self.run_lifecycle(server, table.setup, &mut tally);
         for row in table.rows {
             if halt.is_some() || make_failed {
-                self.skip_row(line, row, &mut tally);
+                self.skip_row(server, line, row, &mut tally);
             } else {
-                halt = self.run_row(connection, line, row, &mut tally);
+                halt = self.run_row(server, line, row, &mut tally);
             }
         }
         if halt.is_none() && !make_failed {
-            halt = self.run_lifecycle(connection, table.teardown, &mut tally).1;
+            halt = self.run_lifecycle(server, table.teardown, &mut tally).1;
         }
 
-        self.finish_table(line, started, &tally);
+        self.finish_table(server, line, started, &tally);
         halt.filter(|halt| *halt != Halt::Table)
     }
 
@@ -287,15 +380,37 @@ impl<'a> FileRunner<'a> {
         let started = Instant::now();
         let mut tally = Tally::default();
         for row in table.rows {
-            self.skip_row(table.line, row, &mut tally);
+            self.skip_row(table.server, table.line, row, &mut tally);
         }
-        self.finish_table(table.line, started, &tally);
+        self.finish_table(table.server, table.line, started, &tally);
     }
 
-    fn finish_table(&mut self, line: usize, started: Instant, tally: &Tally) {
+    /// Fails every row of a table whose server can't be used.
+    fn fail_table(&mut self, table: TablePlan, message: &str) {
+        let started = Instant::now();
+        let mut tally = Tally::default();
+        tally.add_status(Status::Error);
+        for row in table.rows {
+            let checks = skipped_checks(row.batch, &row.method_cells);
+            self.finish_row(
+                table.server,
+                table.line,
+                row.line,
+                Instant::now(),
+                Some(Status::Error),
+                checks,
+                Some(message.to_string()),
+                &mut tally,
+            );
+        }
+        self.finish_table(table.server, table.line, started, &tally);
+    }
+
+    fn finish_table(&mut self, server: usize, line: usize, started: Instant, tally: &Tally) {
         self.events.emit(&Event::TableFinished {
             file: self.file.to_string(),
             line,
+            server: self.pool.name(server).to_string(),
             status: tally.status(),
             duration_ms: started.elapsed().as_millis(),
             counts: tally.counts,
@@ -305,13 +420,13 @@ impl<'a> FileRunner<'a> {
 
     /// Runs instructions that belong to no row. Returns whether a `Make`
     /// failed, and why to stop, if that's the case.
-    fn run_lifecycle<R: Read, W: Write>(
+    fn run_lifecycle(
         &mut self,
-        connection: &mut SlimConnection<R, W>,
+        server: usize,
         batch: Batch,
         tally: &mut Tally,
     ) -> (bool, Option<Halt>) {
-        let results = match self.exchange(connection, &batch) {
+        let results = match self.exchange(server, &batch) {
             Ok(results) => results,
             Err(halt) => {
                 if matches!(halt, Halt::Connection { .. }) {
@@ -339,6 +454,7 @@ impl<'a> FileRunner<'a> {
             self.events.emit(&Event::SetupFailed {
                 file: self.file.to_string(),
                 line,
+                server: self.pool.name(server).to_string(),
                 phase: phase(instruction),
                 status: verdict.status,
                 actual: verdict.actual,
@@ -348,9 +464,9 @@ impl<'a> FileRunner<'a> {
         (make_failed, halt)
     }
 
-    fn run_row<R: Read, W: Write>(
+    fn run_row(
         &mut self,
-        connection: &mut SlimConnection<R, W>,
+        server: usize,
         table: usize,
         row: RowPlan,
         tally: &mut Tally,
@@ -360,22 +476,24 @@ impl<'a> FileRunner<'a> {
             file: self.file.to_string(),
             table,
             line: row.line,
+            server: self.pool.name(server).to_string(),
         });
-        self.log
+        self.pool
             .set_location(Some(self.file), Some(table), Some(row.line));
+        self.state.on_server(self.pool.name(server));
 
         if row
             .batch
             .instructions
             .iter()
-            .any(|instruction| self.missing_symbol(instruction).is_some())
+            .any(|instruction| self.unusable_symbol(instruction).is_some())
         {
-            let checks = self.checks_for_missing_symbols(row.batch, &row.method_cells);
-            self.finish_row(table, row.line, started, None, checks, None, tally);
+            let checks = self.checks_for_unusable_symbols(row.batch, &row.method_cells);
+            self.finish_row(server, table, row.line, started, None, checks, None, tally);
             return None;
         }
 
-        let results = match self.exchange(connection, &row.batch) {
+        let results = match self.exchange(server, &row.batch) {
             Ok(results) => results,
             Err(halt) => {
                 let checks = skipped_checks(row.batch, &row.method_cells);
@@ -385,7 +503,9 @@ impl<'a> FileRunner<'a> {
                     }
                     _ => (Some(Status::Skipped), None),
                 };
-                self.finish_row(table, row.line, started, status, checks, message, tally);
+                self.finish_row(
+                    server, table, row.line, started, status, checks, message, tally,
+                );
                 return Some(halt);
             }
         };
@@ -411,13 +531,14 @@ impl<'a> FileRunner<'a> {
                 with_verdict(check, verdict, &snooze, &self.state),
             );
         }
-        self.finish_row(table, row.line, started, None, checks, None, tally);
+        self.finish_row(server, table, row.line, started, None, checks, None, tally);
         halt
     }
 
-    fn skip_row(&mut self, table: usize, row: RowPlan, tally: &mut Tally) {
+    fn skip_row(&mut self, server: usize, table: usize, row: RowPlan, tally: &mut Tally) {
         let checks = skipped_checks(row.batch, &row.method_cells);
         self.finish_row(
+            server,
             table,
             row.line,
             Instant::now(),
@@ -431,6 +552,7 @@ impl<'a> FileRunner<'a> {
     #[allow(clippy::too_many_arguments)]
     fn finish_row(
         &self,
+        server: usize,
         table: usize,
         line: usize,
         started: Instant,
@@ -449,6 +571,7 @@ impl<'a> FileRunner<'a> {
             file: self.file.to_string(),
             table,
             line,
+            server: self.pool.name(server).to_string(),
             status,
             duration_ms: started.elapsed().as_millis(),
             checks,
@@ -456,12 +579,9 @@ impl<'a> FileRunner<'a> {
         });
     }
 
-    /// Sends a batch. A shorter answer is only valid after a control exception.
-    fn exchange<R: Read, W: Write>(
-        &self,
-        connection: &mut SlimConnection<R, W>,
-        batch: &Batch,
-    ) -> Result<Vec<InstructionResult>, Halt> {
+    /// Sends a batch to a server. A shorter answer is only valid after a
+    /// control exception.
+    fn exchange(&mut self, server: usize, batch: &Batch) -> Result<Vec<InstructionResult>, Halt> {
         if self.control.is_cancelled() {
             return Err(Halt::Cancelled);
         }
@@ -469,9 +589,17 @@ impl<'a> FileRunner<'a> {
         if batch.instructions.is_empty() {
             return Ok(Vec::new());
         }
+        self.state.on_server(self.pool.name(server));
+        let control = self.control;
+        let Some(connection) = self.pool.connection(server) else {
+            return Err(Halt::Connection {
+                kind: RunErrorKind::ServerDied,
+                message: "The server is not running".to_string(),
+            });
+        };
         let results = connection
             .send_instructions(&batch.instructions)
-            .map_err(|error| self.connection_halt(&error))?;
+            .map_err(|error| connection_halt(control, &error))?;
         let stopped_early = results
             .last()
             .is_some_and(|result| Control::of(&result.value).is_some());
@@ -486,23 +614,6 @@ impl<'a> FileRunner<'a> {
             });
         }
         Ok(results)
-    }
-
-    fn connection_halt(&self, error: &SendInstructionsError) -> Halt {
-        if self.control.is_cancelled() {
-            return Halt::Cancelled;
-        }
-        let kind = match error {
-            SendInstructionsError::IoError(_)
-            | SendInstructionsError::FromSlimReaderError(
-                slim_protocol::FromSlimReaderError::IoError(_),
-            ) => RunErrorKind::ServerDied,
-            SendInstructionsError::FromSlimReaderError(_) => RunErrorKind::ProtocolError,
-        };
-        Halt::Connection {
-            kind,
-            message: error.to_string(),
-        }
     }
 
     fn judge(
@@ -536,11 +647,10 @@ impl<'a> FileRunner<'a> {
         let mut resolved = None;
         if let ExpectedResultValue::Symbol(symbol) = &expected.value {
             let Some(value) = self.state.get_symbol(symbol).cloned() else {
+                let set_on = self.state.foreign_server(symbol).map(str::to_string);
                 return Verdict {
                     status: under_snooze(Status::Error, snooze),
-                    actual: Actual::MissingSymbol {
-                        symbol: symbol.clone(),
-                    },
+                    actual: self.unusable(symbol.clone(), set_on, &expected.position),
                     resolved: None,
                     halt: None,
                 };
@@ -569,9 +679,30 @@ impl<'a> FileRunner<'a> {
         }
     }
 
-    /// The server would pass an unknown `$NAME` on as literal text, and a
-    /// fixture that takes strings would then quietly test the wrong thing.
-    fn missing_symbol(&self, instruction: &Instruction) -> Option<String> {
+    /// What a cell gets for a symbol that the server in use doesn't have:
+    /// one that was never set, or one that another server keeps.
+    fn unusable(&self, symbol: String, set_on: Option<String>, position: &Position) -> Actual {
+        match set_on {
+            None => Actual::MissingSymbol { symbol },
+            Some(server) => Actual::SymbolFromOtherServer {
+                message: foreign_symbol_message(
+                    &symbol,
+                    &server,
+                    self.state.server(),
+                    self.file,
+                    position,
+                ),
+                symbol,
+                server,
+            },
+        }
+    }
+
+    /// The symbol of an input cell that the server in use doesn't have, and
+    /// the server that set it, if one did. The server would pass an unknown
+    /// `$NAME` on as literal text, and a fixture that takes strings would
+    /// then quietly test the wrong thing.
+    fn unusable_symbol(&self, instruction: &Instruction) -> Option<(String, Option<String>)> {
         let Instruction::Call { args, .. } = instruction else {
             return None;
         };
@@ -579,21 +710,21 @@ impl<'a> FileRunner<'a> {
             let SlimValue::String(text) = arg else {
                 return None;
             };
-            symbol_name(text)
-                .filter(|name| self.state.get_symbol(name).is_none())
-                .map(str::to_string)
+            let name = symbol_name(text).filter(|name| self.state.get_symbol(name).is_none())?;
+            let set_on = self.state.foreign_server(name).map(str::to_string);
+            Some((name.to_string(), set_on))
         })
     }
 
-    fn checks_for_missing_symbols(&self, batch: Batch, cells: &[MethodCell]) -> Vec<Check> {
+    fn checks_for_unusable_symbols(&self, batch: Batch, cells: &[MethodCell]) -> Vec<Check> {
         let mut checks = Vec::new();
         let items = batch.instructions.iter().zip(batch.expected_result);
         for (instruction, (expected, snooze)) in items {
             let mut check = describe(instruction, &expected, cells);
-            match self.missing_symbol(instruction) {
-                Some(symbol) => {
+            match self.unusable_symbol(instruction) {
+                Some((symbol, set_on)) => {
                     check.status = under_snooze(Status::Error, &snooze);
-                    check.actual = Some(Actual::MissingSymbol { symbol });
+                    check.actual = Some(self.unusable(symbol, set_on, &expected.position));
                     check.snoozed_until = snooze.until();
                     checks.push(check);
                 }
@@ -604,12 +735,21 @@ impl<'a> FileRunner<'a> {
     }
 }
 
-fn symbol_name(text: &str) -> Option<&str> {
-    let name = text.strip_prefix('$')?;
-    let mut chars = name.chars();
-    let valid = chars.next().is_some_and(char::is_alphabetic)
-        && chars.all(|c| c.is_alphanumeric() || c == '_');
-    valid.then_some(name)
+fn connection_halt(control: &ServerControl, error: &SendInstructionsError) -> Halt {
+    if control.is_cancelled() {
+        return Halt::Cancelled;
+    }
+    let kind = match error {
+        SendInstructionsError::IoError(_)
+        | SendInstructionsError::FromSlimReaderError(
+            slim_protocol::FromSlimReaderError::IoError(_),
+        ) => RunErrorKind::ServerDied,
+        SendInstructionsError::FromSlimReaderError(_) => RunErrorKind::ProtocolError,
+    };
+    Halt::Connection {
+        kind,
+        message: error.to_string(),
+    }
 }
 
 fn phase(instruction: &Instruction) -> Phase {

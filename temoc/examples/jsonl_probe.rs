@@ -1,4 +1,6 @@
-//! A fixture that misbehaves on demand. `temoc/tests/jsonl.rs` runs it.
+//! A fixture that misbehaves on demand. `temoc/tests/jsonl.rs` and
+//! `temoc/tests/servers.rs` run it. `PROBE_NAME` names the server, to tell
+//! two of them apart.
 
 use rust_slim::{
     ClassPath, Constructor, ConstructorError, ExecuteMethodError, PortSlimServer, SlimControl,
@@ -90,6 +92,72 @@ impl SlimFixture for Probe {
     }
 }
 
+fn server_name() -> String {
+    std::env::var("PROBE_NAME").unwrap_or_else(|_| "probe".into())
+}
+
+/// Answers the name of the server it runs on.
+struct WhoAmI;
+
+impl ClassPath for WhoAmI {
+    fn class_path() -> String {
+        "WhoAmI".into()
+    }
+}
+
+impl Constructor for WhoAmI {
+    fn construct(_args: Vec<SlimValue>) -> Result<Self, ConstructorError> {
+        Ok(Self)
+    }
+}
+
+impl SlimFixture for WhoAmI {
+    fn execute_method(
+        &mut self,
+        method: &str,
+        _args: Vec<SlimValue>,
+    ) -> Result<SlimValue, ExecuteMethodError> {
+        match method {
+            "name" => Ok(SlimValue::String(server_name())),
+            _ => Err(ExecuteMethodError::MethodNotFound {
+                method: method.into(),
+                class: Self::class_path(),
+            }),
+        }
+    }
+}
+
+/// A fixture that only the server named `machines` has.
+struct MachinesOnly;
+
+impl ClassPath for MachinesOnly {
+    fn class_path() -> String {
+        "MachinesOnly".into()
+    }
+}
+
+impl Constructor for MachinesOnly {
+    fn construct(_args: Vec<SlimValue>) -> Result<Self, ConstructorError> {
+        Ok(Self)
+    }
+}
+
+impl SlimFixture for MachinesOnly {
+    fn execute_method(
+        &mut self,
+        method: &str,
+        _args: Vec<SlimValue>,
+    ) -> Result<SlimValue, ExecuteMethodError> {
+        match method {
+            "here" => Ok(SlimValue::String("yes".into())),
+            _ => Err(ExecuteMethodError::MethodNotFound {
+                method: method.into(),
+                class: Self::class_path(),
+            }),
+        }
+    }
+}
+
 /// File hooks that misbehave for files with a telling name.
 #[derive(Default)]
 struct Hooks;
@@ -149,6 +217,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut server = PortSlimServer::listen_from_args(args().skip(1))?;
     server.add_fixture::<Probe>();
     server.add_fixture::<Hooks>();
+    server.add_fixture::<WhoAmI>();
+    if server_name() == "machines" {
+        server.add_fixture::<MachinesOnly>();
+    }
     server.run()?;
     Ok(())
 }

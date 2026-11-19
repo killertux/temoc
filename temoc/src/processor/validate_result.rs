@@ -5,6 +5,7 @@ use anyhow::{anyhow, bail, Result};
 use slim_protocol::{InstructionResult, InstructionResultValue};
 
 use super::{
+    foreign_symbol_message,
     markdown_commands::Snooze,
     slim_instructions_from_commands::{ExpectedResult, ExpectedResultValue},
     State,
@@ -32,6 +33,19 @@ pub fn validate_result(
             continue;
         }
         if let ExpectedResultValue::Symbol(symbol) = expected_result.value {
+            if let Some(set_on) = state.foreign_server(&symbol) {
+                failures.push((
+                    foreign_symbol_message(
+                        &symbol,
+                        set_on,
+                        state.server(),
+                        &file_path,
+                        &expected_result.position,
+                    ),
+                    snooze.clone(),
+                ));
+                continue;
+            }
             expected_result.value = ExpectedResultValue::Result(
                 state
                     .get_symbol(&symbol)
@@ -42,10 +56,11 @@ pub fn validate_result(
         if expected_result.value != result.value {
             failures.push((
                 format!(
-                    "Expected {}, got {} {}",
+                    "Expected {}, got {} {}{}",
                     expected_result.value,
                     result.value,
-                    failure_expected_result_detail_message(&file_path, &expected_result)
+                    failure_expected_result_detail_message(&file_path, &expected_result),
+                    state.server_suffix()
                 ),
                 snooze.clone(),
             ));
@@ -62,7 +77,6 @@ pub fn validate_result(
 impl PartialEq<InstructionResultValue> for ExpectedResultValue {
     fn eq(&self, other: &InstructionResultValue) -> bool {
         match (self, other) {
-            #[cfg(test)]
             (ExpectedResultValue::Any, _) => true,
             (ExpectedResultValue::NullOrVoidOrMethodNotFound, InstructionResultValue::Void) => true,
             (
@@ -123,7 +137,6 @@ fn failure_expected_result_detail_message(
     let position = &expected_result.position;
     let method_name = &expected_result.method_name;
     match expected_result.value {
-        #[cfg(test)]
         ExpectedResultValue::Any => String::new(),
         ExpectedResultValue::Ok => format!("in {file_path}:{position}"),
         ExpectedResultValue::NullOrVoid

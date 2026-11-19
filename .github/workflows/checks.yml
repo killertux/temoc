@@ -1,6 +1,11 @@
 # Based on https://github.com/actions-rs/meta/blob/master/recipes/msrv.md
 
-on: [push, pull_request]
+# A push to a branch with an open pull request would otherwise run everything
+# twice, once for each event.
+on:
+  push:
+    branches: [master]
+  pull_request:
 
 name: Tests and Checks
 

@@ -1,7 +1,8 @@
 use crate::app::{get_list_of_files, App, Options};
+use crate::config::{config_bool, config_str};
 use crate::jsonl::JsonlOptions;
 use crate::processor::Filter;
-use crate::slim_server_connector::build_slim_server_connector;
+use crate::servers::{Overrides, Servers};
 use anyhow::{anyhow, bail, Result};
 use clap::{Parser, ValueEnum};
 use std::{fs::read_to_string, path::PathBuf};
@@ -10,10 +11,13 @@ use toml::Table;
 mod app;
 mod cancel;
 mod captured_server;
+mod config;
 mod events;
 mod jsonl;
 mod port;
 mod processor;
+mod server_pool;
+mod servers;
 mod slim_server_connector;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -62,6 +66,9 @@ struct Args {
     /// Fixture class whose `beginFile` and `endFile` methods are called around every file
     #[arg(long, value_name = "CLASS")]
     file_hooks: Option<String>,
+    /// Run only the tables of this server. Repeat it, or separate names with commas, to select several
+    #[arg(long = "server", value_name = "NAME", value_delimiter = ',')]
+    servers: Vec<String>,
     /// List of files to test. Append `:LINE` to select a decision table or a row
     files: Vec<PathBuf>,
 }
@@ -86,56 +93,38 @@ fn output_format(args: &Args) -> OutputFormat {
         .unwrap_or(OutputFormat::Text)
 }
 
+/// The command line and the configuration file put together.
+struct Settings {
+    servers: Servers,
+    recursive: bool,
+    show_snoozed: bool,
+    extension: String,
+    filter: Filter,
+    files: Vec<PathBuf>,
+}
+
 fn jsonl_options(args: Args) -> Result<JsonlOptions> {
-    let args = append_config_to_args(args)?;
-    let Some(command) = args.execute_server_command else {
-        bail!("You need to provide a command to start the slim server")
-    };
-    let mut filter = Filter::new();
-    if let Some(fixture) = args.class_filter {
-        filter = filter.fixture_class(&fixture)?;
-    }
+    let settings = settings(args)?;
     Ok(JsonlOptions {
-        command,
-        port: args.port.unwrap_or(8085),
-        pool_size: args.pool_size.unwrap_or(20),
-        pipe_output: args.pipe_output,
-        recursive: args.recursive,
-        extension: args.extension.unwrap_or("md".to_string()).to_lowercase(),
-        filter,
-        persistent_server: args.persistent_server,
-        file_hooks: args.file_hooks,
-        paths: args.files,
+        servers: settings.servers,
+        recursive: settings.recursive,
+        extension: settings.extension,
+        filter: settings.filter,
+        paths: settings.files,
     })
 }
 
 fn run_text(args: Args) -> Result<()> {
-    let args = append_config_to_args(args)?;
-    let Some(command) = args.execute_server_command else {
-        bail!("You need to provide a command to start the slim server")
-    };
-
-    let mut filter = Filter::new();
-    if let Some(fixture) = args.class_filter {
-        filter = filter.fixture_class(&fixture)?;
-    }
-
+    let settings = settings(args)?;
     if App::new(
         Options {
-            show_snoozed: args.show_snoozed,
-            recursive: args.recursive,
-            extension: args.extension.unwrap_or("md".to_string()).to_lowercase(),
-            filter,
-            persistent_server: args.persistent_server,
-            file_hooks: args.file_hooks,
-            paths: args.files,
+            show_snoozed: settings.show_snoozed,
+            recursive: settings.recursive,
+            extension: settings.extension,
+            filter: settings.filter,
+            paths: settings.files,
         },
-        build_slim_server_connector(
-            command,
-            args.port.unwrap_or(8085),
-            args.pool_size.unwrap_or(20),
-            args.pipe_output,
-        ),
+        settings.servers,
     )
     .run()?
     {
@@ -143,37 +132,6 @@ fn run_text(args: Args) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn config_u16(config_file: &Table, key: &str) -> Result<Option<u16>> {
-    config_file
-        .get(key)
-        .map(|value| {
-            let value = value
-                .as_integer()
-                .ok_or_else(|| anyhow!("Expected `{key}` to be a number"))?;
-            u16::try_from(value)
-                .map_err(|_| anyhow!("Expected `{key}` to be between 0 and 65535 but got {value}"))
-        })
-        .transpose()
-}
-
-fn config_bool(config_file: &Table, key: &str, message: &str) -> Result<bool> {
-    config_file.get(key).map_or(Ok(false), |value| {
-        value.as_bool().ok_or_else(|| anyhow!("{message}"))
-    })
-}
-
-fn config_str(config_file: &Table, key: &str, message: &str) -> Result<Option<String>> {
-    config_file
-        .get(key)
-        .map(|value| {
-            value
-                .as_str()
-                .map(str::to_string)
-                .ok_or_else(|| anyhow!("{message}"))
-        })
-        .transpose()
 }
 
 fn config_output(config_file: &Table) -> Result<Option<OutputFormat>> {
@@ -186,103 +144,64 @@ fn config_output(config_file: &Table) -> Result<Option<OutputFormat>> {
         .transpose()
 }
 
-fn append_config_to_args(mut args: Args) -> Result<Args> {
-    match &args.configuration_file {
-        None => Ok(args),
-        Some(configuration_file) => {
-            let config_file = read_to_string(configuration_file)?.parse::<Table>()?;
-            args.port = args.port.or(config_u16(&config_file, "port")?);
-            args.pool_size = args.pool_size.or(config_u16(&config_file, "pool_size")?);
-            args.output = args.output.or(config_output(&config_file)?);
-            args.recursive = args.recursive
-                || config_bool(
-                    &config_file,
-                    "recursive",
-                    "Expect the recursive to be a boolean",
-                )?;
-            args.show_snoozed = args.show_snoozed
-                || config_bool(
-                    &config_file,
-                    "show_snoozed",
-                    "Expect the show_snoozed to be a boolean",
-                )?;
-            args.pipe_output = args.pipe_output
-                || config_bool(
-                    &config_file,
-                    "pipe_output",
-                    "Expect the verbose to be a boolean",
-                )?;
-            args.persistent_server = args.persistent_server
-                || config_bool(
-                    &config_file,
-                    "persistent_server",
-                    "Expect the persistent_server to be a boolean",
-                )?;
-            if args.file_hooks.is_none() {
-                args.file_hooks = config_str(
-                    &config_file,
-                    "file_hooks",
-                    "Expect the file_hooks to be a string",
-                )?;
-            }
-            if args.execute_server_command.is_none() {
-                args.execute_server_command = config_str(
-                    &config_file,
-                    "execute_server_command",
-                    "Expect the slim server command to be a string",
-                )?;
-            }
-            if args.extension.is_none() {
-                args.extension = config_str(
-                    &config_file,
-                    "extension",
-                    "Expect the slim server command to be a string",
-                )?;
-            }
-            if args.files.is_empty() {
-                let test_dir = config_str(
-                    &config_file,
-                    "test_dir",
-                    "Expect the test dir to be a string",
-                )?
-                .ok_or(anyhow!("You need to specify a test file or a test dir"))?;
-                args.files = get_list_of_files(test_dir)?;
-            }
-            Ok(args)
+fn settings(mut args: Args) -> Result<Settings> {
+    let config_file = match &args.configuration_file {
+        Some(configuration_file) => Some(read_to_string(configuration_file)?.parse::<Table>()?),
+        None => None,
+    };
+    if let Some(config_file) = &config_file {
+        config_output(config_file)?;
+        args.recursive = args.recursive
+            || config_bool(
+                config_file,
+                "recursive",
+                "Expect the recursive to be a boolean",
+            )?;
+        args.show_snoozed = args.show_snoozed
+            || config_bool(
+                config_file,
+                "show_snoozed",
+                "Expect the show_snoozed to be a boolean",
+            )?;
+        if args.extension.is_none() {
+            args.extension = config_str(
+                config_file,
+                "extension",
+                "Expect the extension to be a string",
+            )?;
         }
     }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    fn config(toml: &str) -> Table {
-        toml.parse().unwrap()
+    let mut servers = Servers::from_config(
+        config_file.as_ref(),
+        Overrides {
+            command: args.execute_server_command,
+            port: args.port,
+            pool_size: args.pool_size,
+            persistent: args.persistent_server,
+            file_hooks: args.file_hooks,
+            pipe_output: args.pipe_output,
+        },
+    )?;
+    servers.select(&args.servers)?;
+    if let (Some(config_file), true) = (&config_file, args.files.is_empty()) {
+        let test_dir = config_str(
+            config_file,
+            "test_dir",
+            "Expect the test dir to be a string",
+        )?
+        .ok_or(anyhow!("You need to specify a test file or a test dir"))?;
+        args.files = get_list_of_files(test_dir)?;
     }
-
-    #[test]
-    fn config_u16_reads_valid_values() {
-        let config = config("port = 8085");
-        assert_eq!(Some(8085), config_u16(&config, "port").unwrap());
-        assert_eq!(None, config_u16(&config, "pool_size").unwrap());
+    let mut filter = Filter::new();
+    if let Some(fixture) = args.class_filter {
+        filter = filter.fixture_class(&fixture)?;
     }
-
-    #[test]
-    fn config_u16_rejects_out_of_range_values() {
-        for value in ["70000", "65537", "-1"] {
-            let config = config(&format!("port = {value}"));
-            let error = config_u16(&config, "port").unwrap_err();
-            assert_eq!(
-                format!("Expected `port` to be between 0 and 65535 but got {value}"),
-                error.to_string()
-            );
-        }
-    }
-
-    #[test]
-    fn config_u16_rejects_values_that_are_not_numbers() {
-        let error = config_u16(&config("pool_size = \"ten\""), "pool_size").unwrap_err();
-        assert_eq!("Expected `pool_size` to be a number", error.to_string());
-    }
+    Ok(Settings {
+        servers,
+        recursive: args.recursive,
+        show_snoozed: args.show_snoozed,
+        extension: args.extension.unwrap_or("md".to_string()).to_lowercase(),
+        filter,
+        files: args.files,
+    })
 }

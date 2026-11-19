@@ -103,6 +103,13 @@ pub enum Actual {
     MissingSymbol {
         symbol: String,
     },
+    /// The symbol was set on another server, which keeps it to itself.
+    SymbolFromOtherServer {
+        symbol: String,
+        /// The server that set it.
+        server: String,
+        message: String,
+    },
     ProtocolError {
         message: String,
     },
@@ -202,6 +209,8 @@ pub enum OutputStream {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TableSummary {
     pub line: usize,
+    /// The name of the server the table runs on.
+    pub server: String,
     pub class: String,
     pub columns: Vec<String>,
     pub rows: Vec<usize>,
@@ -222,16 +231,19 @@ pub enum Event {
     TableStarted {
         file: String,
         line: usize,
+        server: String,
     },
     RowStarted {
         file: String,
         table: usize,
         line: usize,
+        server: String,
     },
     RowFinished {
         file: String,
         table: usize,
         line: usize,
+        server: String,
         status: Status,
         duration_ms: u128,
         checks: Vec<Check>,
@@ -241,6 +253,7 @@ pub enum Event {
     TableFinished {
         file: String,
         line: usize,
+        server: String,
         status: Status,
         duration_ms: u128,
         counts: Counts,
@@ -254,6 +267,7 @@ pub enum Event {
     SetupFailed {
         file: String,
         line: usize,
+        server: String,
         phase: Phase,
         status: Status,
         actual: Actual,
@@ -265,12 +279,16 @@ pub enum Event {
         message: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         file: Option<String>,
+        /// The server that could not be used, or that stopped the run.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        server: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         stderr: Option<String>,
     },
     Output {
         stream: OutputStream,
         text: String,
+        server: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         file: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
