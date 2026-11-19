@@ -1,6 +1,6 @@
 # Temoc reference
 
-What Temoc actually does, for writing specs and fixtures. Matches Temoc 0.11.
+What Temoc actually does, for writing specs and fixtures. Matches Temoc 0.12.
 
 ## A spec file
 
@@ -32,6 +32,7 @@ Both `[//]: # (...)` and `[//]: # "..."` work.
 | `decisionTable <Class>` | The **next block must be a table**; it is run against fixture `<Class>`. Anything else in between is a parse error. |
 | `decisionTable <Class>#<method>` | Single-method table (below). |
 | `... -- snooze until YYYY-MM-DD` | Suffix on either form. Failures in this table do not fail the run through that date. |
+| `server <name>` | Every table and `import` after it in the file uses the fixture server `<name>`, until the next `server` directive. See [Several servers](#several-servers). |
 
 A table with no directive in front of it is plain documentation and is not run.
 
@@ -89,6 +90,68 @@ is a Temoc extension, not FitNesse.
 Typical use: open a database transaction in `beginFile` and roll it back in
 `endFile`, so the tables of a file share state and the next file starts clean.
 
+## Several servers
+
+When the behaviour lives in more than one system (say a TypeScript server and
+a set of Rust crates), one run can use a fixture server for each. `Config.toml`
+names them, and exactly one is the default:
+
+```toml
+test_dir = "specs/"
+recursive = true
+
+[servers.server]
+default = true
+execute_server_command = "./fixtures/server.sh"
+port = 1
+persistent_server = true
+file_hooks = "SpecHooks"
+
+[servers.machines]
+execute_server_command = "./target/debug/machine_fixtures %p"
+port = 1
+```
+
+A page uses the default server unless it says otherwise:
+
+```markdown
+[//]: # (server machines)
+[//]: # (decisionTable ClickBounds)
+
+| click at | sent to the machine? |
+| -------- | -------------------- |
+| 640, 400 | yes                  |
+```
+
+- `server <name>` holds for the rest of the file, or until the next `server`
+  directive, so one page can have a table about each system. An unknown name
+  is a parse error at that line and nothing in the file runs.
+- An `import` goes to the server selected where it appears, and is only sent
+  if the file runs a table on that server. Put it after the `server`
+  directive.
+- A server starts at the first table that needs it. A run that only touches
+  pages of one server never starts the other.
+- `execute_server_command`, `port`, `pool_size`, `persistent_server`,
+  `file_hooks` and `pipe_output` are set for each server. Writing them at the
+  top level together with `[servers.*]` is an error. Without `[servers.*]`
+  they describe one server called `default`, as before.
+- **File hooks are per server.** For each file, `beginFile` runs on a server
+  just before the first table of the file on that server, and `endFile` at
+  the end of the file, on every server whose `beginFile` ran. A server that
+  the file doesn't use gets no hook. A failed `beginFile` skips only the
+  tables of its server.
+- **Symbols are not shared.** Each server keeps its own, so `$ID=` in a table
+  of one server and `$ID` in a table of another fails that cell: ``Symbol
+  `$ID` was set on server `server` and cannot be used on server `machines` ``.
+  Carry such a value through the system under test instead, or write it in
+  the spec.
+- A server that can't start, or dies, fails the tables that need it with a
+  message naming it. The tables of the other servers still run.
+- `--server machines` runs only the tables of that server and never starts
+  the others; `--server a,b` selects several. The command line flags `-x`,
+  `-p`, `-l`, `--persistent-server`, `--file-hooks` and `-o` apply to the
+  default server.
+
 ## Single-method tables
 
 `decisionTable Fixture#method` calls `method(input cells...)` once per row,
@@ -110,7 +173,7 @@ no ranges or regexes. Format in the fixture. An expected cell of `OK` or
 | `$NAME=` | Stores the returned value in `NAME` (passes unless the call throws). | n/a |
 | `$NAME` | Expects the return to equal the stored value. | Passes the stored value to the setter. |
 
-Symbols live for one file. Use them to carry generated values (ids, tokens)
+Symbols live for one file and on one [server](#several-servers). Use them to carry generated values (ids, tokens)
 between rows and tables without writing them in the spec. A row run on its
 own cannot see symbols set by other rows. Output cells of a single-method
 table are compared as plain text, so `$NAME=` and `$NAME` do not work there.
@@ -124,6 +187,7 @@ temoc -c Config.toml specs/late-fees.md   # one file
 temoc -c Config.toml specs/late-fees.md:9 # the table whose directive is on line 9
 temoc -c Config.toml specs/late-fees.md:13 # only the row on line 13
 temoc -c Config.toml -f 'LateFee'         # tables whose fixture class matches a regex
+temoc -c Config.toml --server machines    # only the tables of one named server
 temoc -c Config.toml -s                   # also list snoozed failures
 temoc -c Config.toml -o                   # show the fixture server's stdout/stderr
 temoc -c Config.toml --output jsonl       # one JSON event per line
@@ -163,7 +227,10 @@ Expected `1`, got Exception `NO_METHOD_IN_CLASS exp Calc.CalculatorFixture` in s
 - `FAIL`: at least one real failure. Snoozed failures in the same file are
   listed too with `-s`, marked `-- snoozed until <date>`.
 - `SNOOZED`: there are failures and all of them are snoozed.
-- `NONE`: the file has no tables to run (after filters).
+- `NONE`: the file has no tables to run (after filters and `--server`).
+
+In a file that uses several servers, each failure ends with ` on server
+<name>`.
 
 The exit code is the verdict: 0 when nothing really failed, 1 otherwise. An
 expired snooze is a normal failure.

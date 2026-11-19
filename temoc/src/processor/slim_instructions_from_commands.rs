@@ -1,5 +1,8 @@
+use std::collections::BTreeMap;
 use std::fmt::Display;
 use ulid::Ulid;
+
+use crate::servers::Servers;
 
 use slim_protocol::InstructionResultValue;
 use slim_protocol::{Id, Instruction, SlimValue};
@@ -10,23 +13,67 @@ use super::markdown_commands::{
 
 pub type ExpectedResulWithSnooze = (ExpectedResult, Snooze);
 
+/// A command and the index of the server it is for.
+pub type Placed = (usize, MarkdownCommand);
+
+#[cfg(test)]
 pub fn get_instructions_from_commands(
     commands: Vec<MarkdownCommand>,
 ) -> (Vec<Instruction>, Vec<ExpectedResulWithSnooze>) {
-    let mut plan = InstructionPlan::default();
-    for command in commands {
+    let commands = commands.into_iter().map(|command| (0, command)).collect();
+    let mut segments = get_segments(commands);
+    assert!(segments.len() <= 1);
+    let batch = segments.pop().map(|segment| segment.batch);
+    let batch = batch.unwrap_or_default();
+    (batch.instructions, batch.expected_result)
+}
+
+/// What a file sends to one server before it turns to another.
+pub struct Segment {
+    pub server: usize,
+    pub batch: Batch,
+}
+
+/// Splits the commands of a file where the server changes. A file with one
+/// server is one segment. An import waits for the next table of its server,
+/// so that it doesn't split what another server is running.
+pub fn get_segments(commands: Vec<Placed>) -> Vec<Segment> {
+    let mut waiting: BTreeMap<usize, InstructionPlan> = BTreeMap::new();
+    let mut segments: Vec<(usize, InstructionPlan)> = Vec::new();
+    for (server, command) in commands {
+        let current = segments
+            .last_mut()
+            .filter(|(current, _)| *current == server);
         match command {
-            MarkdownCommand::Import { path, position } => plan.import(path, position),
+            MarkdownCommand::Server { .. } => {}
+            MarkdownCommand::Import { path, position } => match current {
+                Some((_, plan)) => plan.import(path, position),
+                None => waiting.entry(server).or_default().import(path, position),
+            },
             MarkdownCommand::DecisionTable {
                 class,
                 r#type,
                 table,
                 snoozed,
                 ..
-            } => plan.decision_table(class, &r#type, table, &snoozed),
+            } => {
+                if current.is_none() {
+                    segments.push((server, waiting.remove(&server).unwrap_or_default()));
+                }
+                if let Some((_, plan)) = segments.last_mut() {
+                    plan.decision_table(class, &r#type, table, &snoozed);
+                }
+            }
         }
     }
-    (plan.instructions, plan.expected_result)
+    segments.extend(waiting);
+    segments
+        .into_iter()
+        .map(|(server, mut plan)| Segment {
+            server,
+            batch: plan.take_batch(),
+        })
+        .collect()
 }
 
 /// Instructions sent to the server together, with what each should return.
@@ -49,6 +96,10 @@ pub struct RowPlan {
 }
 
 pub struct TablePlan {
+    /// The index of the server it runs on.
+    pub server: usize,
+    /// False when `--server` left its server out. It is reported as skipped.
+    pub selected: bool,
     pub line: usize,
     pub class: String,
     pub columns: Vec<String>,
@@ -61,8 +112,8 @@ pub struct TablePlan {
 
 pub struct FilePlan {
     pub tables: Vec<TablePlan>,
-    /// Imports that come after the last table.
-    pub trailing: Batch,
+    /// The imports that come after the last table of a server.
+    pub trailing: Vec<(usize, Batch)>,
 }
 
 /// What surrounds a file when a file hooks fixture is configured. Each part
@@ -118,11 +169,13 @@ pub fn file_hooks(class: &str, file: &str) -> FileHooks {
 }
 
 /// Splits the commands of a file into batches that are sent one at a time.
-pub fn get_file_plan(commands: Vec<MarkdownCommand>) -> FilePlan {
-    let mut plan = InstructionPlan::default();
+pub fn get_file_plan(commands: Vec<Placed>, servers: &Servers) -> FilePlan {
+    let mut plans: BTreeMap<usize, InstructionPlan> = BTreeMap::new();
     let mut tables = Vec::new();
-    for command in commands {
+    for (server, command) in commands {
+        let plan = plans.entry(server).or_default();
         match command {
+            MarkdownCommand::Server { .. } => {}
             MarkdownCommand::Import { path, position } => plan.import(path, position),
             MarkdownCommand::DecisionTable {
                 class,
@@ -130,12 +183,27 @@ pub fn get_file_plan(commands: Vec<MarkdownCommand>) -> FilePlan {
                 table,
                 columns,
                 snoozed,
-            } => tables.push(plan.table_plan(class, &r#type, table, columns, snoozed)),
+            } => {
+                let selected = servers.is_selected(server);
+                // A table that is left out must not take the imports that
+                // wait for the next table of its server.
+                let mut left_out = InstructionPlan::default();
+                let plan = if selected { plan } else { &mut left_out };
+                tables.push(TablePlan {
+                    server,
+                    selected,
+                    ..plan.table_plan(class, &r#type, table, columns, snoozed)
+                });
+            }
         }
     }
     FilePlan {
         tables,
-        trailing: plan.take_batch(),
+        trailing: plans
+            .into_iter()
+            .map(|(server, mut plan)| (server, plan.take_batch()))
+            .filter(|(_, batch)| !batch.instructions.is_empty())
+            .collect(),
     }
 }
 
@@ -206,6 +274,8 @@ impl InstructionPlan {
             .collect();
         self.optional_call(&instance, "endTable", position.clone(), &snoozed);
         TablePlan {
+            server: 0,
+            selected: true,
             line: position.line(),
             class,
             columns,
@@ -452,7 +522,7 @@ impl ExpectedResult {
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum ExpectedResultValue {
-    #[cfg(test)]
+    /// The answer is not checked, because the cell has already failed.
     Any,
     Ok,
     NullOrVoid,
@@ -469,7 +539,6 @@ pub enum ExpectedResultValue {
 impl Display for ExpectedResultValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            #[cfg(test)]
             ExpectedResultValue::Any => write!(f, "ANY"),
             ExpectedResultValue::NullOrVoid => write!(f, "NULL or VOID"),
             ExpectedResultValue::NullOrVoidOrMethodNotFound => {

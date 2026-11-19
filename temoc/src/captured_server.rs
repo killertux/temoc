@@ -1,7 +1,7 @@
 //! Starts a Slim server for `--output jsonl`. Nothing it prints can reach
 //! temoc's stdout, because all of it is read here and reported as events.
 
-use crate::cancel::{ServerControl, TERMINATE_GRACE};
+use crate::cancel::{signal_group, ServerControl, TERMINATE_GRACE};
 use crate::events::{Event, EventSink, OutputStream};
 use crate::port::CyclePort;
 use crate::slim_server_connector::random_cycle_port;
@@ -32,15 +32,18 @@ struct Location {
 /// `-o`, forwards every line as an `output` event.
 pub struct ServerLog {
     events: Arc<EventSink>,
+    /// The name of the server it listens to.
+    server: String,
     forward: bool,
     location: Mutex<Location>,
     stderr_tail: Mutex<VecDeque<String>>,
 }
 
 impl ServerLog {
-    pub fn new(events: Arc<EventSink>, forward: bool) -> Self {
+    pub fn new(events: Arc<EventSink>, server: String, forward: bool) -> Self {
         Self {
             events,
+            server,
             forward,
             location: Mutex::default(),
             stderr_tail: Mutex::default(),
@@ -79,6 +82,7 @@ impl ServerLog {
             self.events.emit(&Event::Output {
                 stream,
                 text,
+                server: self.server.clone(),
                 file: location.file,
                 table: location.table,
                 row: location.row,
@@ -191,6 +195,7 @@ impl CapturedServerConnector {
 
         let mut server = CapturedServer {
             child,
+            process_group,
             stream: None,
             output_threads,
             control: Arc::clone(&self.control),
@@ -207,6 +212,7 @@ impl CapturedServerConnector {
 
 pub struct CapturedServer {
     child: Child,
+    process_group: i32,
     stream: Option<TcpStream>,
     output_threads: Vec<JoinHandle<()>>,
     control: Arc<ServerControl>,
@@ -281,9 +287,9 @@ impl CapturedServer {
 
     /// Stops the server and everything it started.
     pub fn stop_now(mut self) -> Option<ExitStatus> {
-        self.control.signal(libc::SIGTERM);
+        signal_group(self.process_group, libc::SIGTERM);
         let status = self.wait_for_exit(TERMINATE_GRACE);
-        self.control.signal(libc::SIGKILL);
+        signal_group(self.process_group, libc::SIGKILL);
         let status = status.or_else(|| self.child.wait().ok());
         self.finish();
         status
@@ -303,7 +309,7 @@ impl CapturedServer {
     /// Waits for the last output, but not for a stray process that still holds
     /// the pipes open.
     fn finish(&mut self) {
-        self.control.detach();
+        self.control.detach(self.process_group);
         let start = Instant::now();
         while start.elapsed() < OUTPUT_DRAIN_LIMIT
             && !self.output_threads.iter().all(JoinHandle::is_finished)

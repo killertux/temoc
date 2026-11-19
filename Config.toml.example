@@ -21,3 +21,19 @@ persistent_server = false
 # Fixture class whose `beginFile` and `endFile` methods are called around every file.
 # This is a Temoc extension, not part of FitNesse.
 # file_hooks = "Calculator.Fixtures.SpecHooks"
+
+# To check one tree of pages against several servers, name each server
+# instead of setting the keys above at the top level. A page selects a server
+# with `[//]: # (server machines)`, and uses the default one otherwise.
+# test_dir, extension, recursive, show_snoozed and output stay at the top.
+#
+# [servers.server]
+# default = true
+# execute_server_command = "apps/server/fixture-server.sh"
+# port = 1
+# persistent_server = true
+# file_hooks = "SpecHooks"
+#
+# [servers.machines]
+# execute_server_command = "crates/machines/fixture-server.sh"
+# port = 1

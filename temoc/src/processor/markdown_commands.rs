@@ -9,6 +9,11 @@ use std::fmt::Display;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MarkdownCommand {
+    /// Selects the server of everything after it in the file.
+    Server {
+        name: String,
+        position: Position,
+    },
     Import {
         path: String,
         position: Position,
@@ -158,6 +163,10 @@ pub fn get_commands_from_markdown(
                 match command.split_once(' ') {
                     Some(("import", import)) => result.push(MarkdownCommand::Import {
                         path: import.to_string(),
+                        position,
+                    }),
+                    Some(("server", name)) => result.push(MarkdownCommand::Server {
+                        name: name.trim().to_string(),
                         position,
                     }),
                     Some(("decisionTable", test_class)) => {
@@ -735,6 +744,39 @@ This is a calculator example
                 columns: vec!["column".into()],
                 snoozed: Snooze::not_snooze(),
             }],
+            commands
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn server_directives_in_both_spellings() -> Result<()> {
+        let commands = get_commands_from_markdown(
+            parse_markdown(
+                r#"
+[//]: # (server machines)
+[//]: # (import Fixtures)
+
+[//]: # "server  other "
+            "#,
+            ),
+            "test_file.md",
+        )?;
+        assert_eq!(
+            vec![
+                MarkdownCommand::Server {
+                    name: "machines".into(),
+                    position: Position::new(2, 1)
+                },
+                MarkdownCommand::Import {
+                    path: "Fixtures".into(),
+                    position: Position::new(3, 1)
+                },
+                MarkdownCommand::Server {
+                    name: "other".into(),
+                    position: Position::new(5, 1)
+                },
+            ],
             commands
         );
         Ok(())
